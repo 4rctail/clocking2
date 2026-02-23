@@ -352,6 +352,39 @@ function parsePHTime(timeStr, dateStr) {
 
   return utcDate;
 }
+
+/**
+ * Parse end time allowing 24:00+ style inputs.
+ * Example: 25:30 means next day 1:30.
+ */
+function parseExtendedEndPHTime(timeStr, dateStr) {
+  if (!timeStr || !dateStr) return null;
+
+  const [m, d, y] = dateStr.split("/").map(Number);
+  if (!m || !d || !y) return null;
+
+  const match = timeStr.match(/^(\d{1,2}):([0-5]\d)$/);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+
+  const dayOffset = Math.floor(hour / 24);
+  const normalizedHour = hour % 24;
+
+  const utcDate = new Date(Date.UTC(
+    y,
+    m - 1,
+    d + dayOffset,
+    normalizedHour - 8,
+    minute,
+    0,
+    0
+  ));
+
+  return utcDate;
+}
 /**
  * Format a UTC ISO string for display in PH timezone
  */
@@ -869,12 +902,17 @@ client.on("interactionCreate", async interaction => {
         return interaction.editReply("⚠️ This user has no sessions to edit.");
       }
   
-      const index = sessionIndex - 1;
-      if (index >= record.logs.length) {
+      const editableLogs = record.logs.slice(-15);
+      const editableOffset = record.logs.length - editableLogs.length;
+
+      const visibleIndex = sessionIndex - 1;
+      if (visibleIndex >= editableLogs.length) {
         return interaction.editReply(
-          `⚠️ User only has ${record.logs.length} session(s).`
+          `⚠️ You can only edit the latest ${editableLogs.length} session(s), matching /timesheet view order.`
         );
       }
+
+      const index = editableOffset + visibleIndex;
   
       // ==================================================
       // 🗑️ DELETE SESSION EXCEPTION
@@ -919,11 +957,12 @@ client.on("interactionCreate", async interaction => {
       // ==================================================
       // ⏱️ STRICT HH:MM VALIDATION
       // ==================================================
-      const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
-  
-      if (!HHMM.test(startStr) || !HHMM.test(endStr)) {
+      const START_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+      const END_HHMM_EXTENDED = /^(?:([01]\d|2[0-3])|([2-4]\d)):[0-5]\d$/;
+
+      if (!START_HHMM.test(startStr) || !END_HHMM_EXTENDED.test(endStr)) {
         return interaction.editReply(
-          "❌ Time format must be **HH:MM** (24-hour). Use `0` + `0` to delete a session."
+          "❌ Time format must be **HH:MM**. Start accepts 00:00-23:59, end accepts 00:00-49:59 (24:00+ becomes next day). Use `0` + `0` to delete a session."
         );
       }
   
@@ -936,7 +975,7 @@ client.on("interactionCreate", async interaction => {
       });
   
       const newStart = parsePHTime(startStr, phDate);
-      const newEnd   = parsePHTime(endStr, phDate);
+      const newEnd   = parseExtendedEndPHTime(endStr, phDate);
   
       if (!newStart || !newEnd || newStart >= newEnd) {
         return interaction.editReply(
