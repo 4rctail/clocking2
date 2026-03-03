@@ -446,6 +446,15 @@ function parseDatePH(str, end = false) {
 
 // Track live status updates per user
 const liveStatusTimers = new Map();
+// Serialize timesheet load/mutate/persist operations to prevent race conditions
+// between interaction handlers and the background auto clock-out sweep.
+let timesheetWriteQueue = Promise.resolve();
+
+function withTimesheetWriteLock(task) {
+  const run = timesheetWriteQueue.then(task, task);
+  timesheetWriteQueue = run.catch(() => {});
+  return run;
+}
 
 /**
  * Merge old username keys into proper userId entries before saving
@@ -524,9 +533,14 @@ async function persist() {
 // TIME HELPERS
 // =======================
 const nowISO = () => new Date().toISOString();
+const AUTO_CLOCK_OUT_LIMIT_MS = 8 * 3600000;
+const AUTO_CLOCK_OUT_INTERVAL_MS = 60000;
 
 const diffHours = (s, e) =>
   (new Date(e) - new Date(s)) / 3600000;
+
+const getAutoClockOutEndISO = (startISO) =>
+  new Date(new Date(startISO).getTime() + AUTO_CLOCK_OUT_LIMIT_MS).toISOString();
 
 
 const formatDate = iso =>
@@ -545,6 +559,68 @@ function elapsed(startISO) {
   const h = Math.floor(ms / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
   return `${h}h ${m}m`;
+}
+
+let autoClockOutSweepRunning = false;
+
+async function autoClockOutReachedSessions() {
+  if (autoClockOutSweepRunning) return;
+  autoClockOutSweepRunning = true;
+
+  try {
+    await withTimesheetWriteLock(async () => {
+      await loadFromDisk();
+
+      let hasChanges = false;
+      const now = Date.now();
+
+      for (const [userId, record] of Object.entries(timesheet)) {
+        if (!record?.active) continue;
+
+        const startMs = new Date(record.active).getTime();
+        if (Number.isNaN(startMs)) {
+          console.warn(`⚠ Invalid active timestamp for ${userId}: ${record.active}`);
+          continue;
+        }
+
+        if (now - startMs < AUTO_CLOCK_OUT_LIMIT_MS) continue;
+
+        const start = record.active;
+        const end = getAutoClockOutEndISO(start);
+        const hours = diffHours(start, end);
+
+        record.logs ??= [];
+        record.logs.push({
+          start,
+          end,
+          hours,
+          source: "auto_8h",
+        });
+        record.active = null;
+        hasChanges = true;
+
+        console.log(
+          `⏲ AUTO_8H clock-out user=${userId} start=${start} end=${end}`
+        );
+      }
+
+      if (hasChanges) {
+        await persist();
+      }
+    });
+  } catch (err) {
+    console.error("❌ Auto clock-out sweep failed:", err);
+  } finally {
+    autoClockOutSweepRunning = false;
+  }
+}
+
+function startAutoClockOutWatcher() {
+  setInterval(() => {
+    autoClockOutReachedSessions().catch((err) => {
+      console.error("❌ Auto clock-out interval failure:", err);
+    });
+  }, AUTO_CLOCK_OUT_INTERVAL_MS);
 }
 
 // =======================
@@ -695,7 +771,9 @@ client.on("interactionCreate", async interaction => {
     // TOTAL HOURS (WITH OPTIONAL DATE RANGE + HISTORY)
     // ==========================================================
     if (interaction.commandName === "totalhr") {
-      await loadFromDisk();
+      await withTimesheetWriteLock(async () => {
+        await loadFromDisk();
+      });
   
       if (!hasLeaderRoleById(interaction.user.id)) {
         return interaction.editReply("❌ Only leaders and managers can view total hours.");
@@ -789,8 +867,44 @@ client.on("interactionCreate", async interaction => {
     // -------- CLOCK IN --------
     // -------- CLOCK IN --------
     if (interaction.commandName === "clockin") {
+      return withTimesheetWriteLock(async () => {
+        await loadFromDisk();
+      
+        const user = resolveStrictUser(interaction);
+        if (!user) {
+          return interaction.editReply("❌ Cannot resolve user.");
+        }
+      
+        const record = ensureUserRecord(user.userId, user.name);
+      
+        if (record.active) {
+          return interaction.editReply("❌ Already clocked in.");
+        }
+      
+        record.active = nowISO();
+        await persist();
+      
+        return interaction.editReply({
+          embeds: [{
+            title: "🟢 Clocked In",
+            color: 0x2ecc71,
+            fields: [
+              { name: "👤 User", value: record.name },
+              { name: "🆔 User ID", value: record.userId },
+              { name: "⏱ Start", value: formatDate(record.active) },
+            ],
+            timestamp: new Date().toISOString(),
+          }],
+        });
+      });
+    }
+
+  // -------- CLOCK OUT --------
+  // -------- CLOCK OUT (EMBED + DETAILS) --------
+  if (interaction.commandName === "clockout") {
+    return withTimesheetWriteLock(async () => {
       await loadFromDisk();
-    
+
       const user = resolveStrictUser(interaction);
       if (!user) {
         return interaction.editReply("❌ Cannot resolve user.");
@@ -798,81 +912,50 @@ client.on("interactionCreate", async interaction => {
     
       const record = ensureUserRecord(user.userId, user.name);
     
-      if (record.active) {
-        return interaction.editReply("❌ Already clocked in.");
+      if (!record.active) {
+        return interaction.editReply("❌ Not clocked in.");
       }
     
-      record.active = nowISO();
+      const start = record.active;
+      const end = nowISO();
+      const hours = diffHours(start, end);
+      const rounded = Math.round(hours * 100) / 100;
+
+      record.logs.push({
+        start,
+        end,
+        hours,
+      });
+    
+      record.active = null;
       await persist();
     
       return interaction.editReply({
         embeds: [{
-          title: "🟢 Clocked In",
-          color: 0x2ecc71,
+          title: "🔴 Clocked Out",
+          color: 0xe74c3c,
           fields: [
             { name: "👤 User", value: record.name },
-            { name: "🆔 User ID", value: record.userId },
-            { name: "⏱ Start", value: formatDate(record.active) },
+            { name: "▶️ Started", value: formatDate(start), inline: false },
+            { name: "⏹ Ended", value: formatDate(end), inline: false },
+            { name: "⏱ Session Duration", value: `${rounded}h`, inline: true },
+            {
+              name: "⚠️ Reminder",
+              value: "**REMINDER: UPDATE AD SPENT**",
+              inline: false,
+            },
           ],
           timestamp: new Date().toISOString(),
         }],
       });
-    }
-
-  // -------- CLOCK OUT --------
-  // -------- CLOCK OUT (EMBED + DETAILS) --------
-  if (interaction.commandName === "clockout") {
-    await loadFromDisk();
-
-    const user = resolveStrictUser(interaction);
-    if (!user) {
-      return interaction.editReply("❌ Cannot resolve user.");
-    }
-  
-    const record = ensureUserRecord(user.userId, user.name);
-  
-    if (!record.active) {
-      return interaction.editReply("❌ Not clocked in.");
-    }
-  
-    const start = record.active;
-    const end = nowISO();
-    const hours = diffHours(start, end);
-    const rounded = Math.round(hours * 100) / 100;
-
-    record.logs.push({
-      start,
-      end,
-      hours,
-    });
-  
-    record.active = null;
-    await persist();
-  
-    return interaction.editReply({
-      embeds: [{
-        title: "🔴 Clocked Out",
-        color: 0xe74c3c,
-        fields: [
-          { name: "👤 User", value: record.name },
-          { name: "▶️ Started", value: formatDate(start), inline: false },
-          { name: "⏹ Ended", value: formatDate(end), inline: false },
-          { name: "⏱ Session Duration", value: `${rounded}h`, inline: true },
-          {
-            name: "⚠️ Reminder",
-            value: "**REMINDER: UPDATE AD SPENT**",
-            inline: false,
-          },
-        ],
-        timestamp: new Date().toISOString(),
-      }],
     });
   }
 
   // -------- EDIT SESSION (MANAGER ONLY) --------
   if (interaction.commandName === "edit") {
     try {
-      await loadFromDisk();
+      return await withTimesheetWriteLock(async () => {
+        await loadFromDisk();
   
       // Permission check
       if (!hasManagerRoleById(interaction.user.id)) {
@@ -1021,6 +1104,7 @@ client.on("interactionCreate", async interaction => {
           timestamp: new Date().toISOString(),
         }],
       });
+      });
   
     } catch (err) {
       console.error("Edit command failed:", err);
@@ -1034,7 +1118,9 @@ client.on("interactionCreate", async interaction => {
 
   // -------- STATUS --------
   if (interaction.commandName === "status") {
-    await loadFromDisk();
+    await withTimesheetWriteLock(async () => {
+      await loadFromDisk();
+    });
   
     const showAll = interaction.options.getBoolean("all");
     const targetUser =
@@ -1150,7 +1236,8 @@ client.on("interactionCreate", async interaction => {
     // -------- FORCE CLOCK OUT (MANAGER ONLY | CRASH SAFE) --------
     if (interaction.commandName === "forceclockout") {
       try {
-        await loadFromDisk();
+        return withTimesheetWriteLock(async () => {
+          await loadFromDisk();
     
         // permission check
         if (!hasLeaderRoleById(interaction.user.id)) {
@@ -1187,7 +1274,7 @@ client.on("interactionCreate", async interaction => {
           targetUser.globalName ||
           targetUser.username;
     
-        return interaction.editReply({
+          return interaction.editReply({
           embeds: [{
             title: "⛔ Force Clock-Out",
             color: 0xe67e22,
@@ -1208,6 +1295,7 @@ client.on("interactionCreate", async interaction => {
             ],
             timestamp: new Date().toISOString(),
           }],
+          });
         });
     
       } catch (err) {
@@ -1220,8 +1308,6 @@ client.on("interactionCreate", async interaction => {
 
   // -------- LOG TRACKER (MANAGER ONLY) --------
   if (interaction.commandName === "logtracker") {
-    await loadFromDisk();
-  
     const sub = interaction.options.getSubcommand(); // should always be 'run'
     if (!hasManagerRoleById(interaction.user.id)) {
       return interaction.editReply("❌ Only managers can run log tracker.");
@@ -1285,6 +1371,9 @@ client.on("interactionCreate", async interaction => {
   
     // ===== ARCHIVE LOGS =====
     else if (reset) {
+      return withTimesheetWriteLock(async () => {
+        await loadFromDisk();
+
       const HISTORY_FILE = "./timesheetHistory.json";
       let history = { tracks: [] };
   
@@ -1340,7 +1429,7 @@ client.on("interactionCreate", async interaction => {
       });
   
       await persist();
-  
+
       return interaction.editReply({
         embeds: [{
           title: "📦 Log Tracker Completed",
@@ -1361,6 +1450,7 @@ client.on("interactionCreate", async interaction => {
           footer: { text: "Archived logs, active sessions preserved" },
           timestamp: new Date().toISOString(),
         }],
+      });
       });
     }
   
@@ -1391,7 +1481,9 @@ client.on("interactionCreate", async interaction => {
   
     if (sub !== "view") return;
   
-    await loadFromDisk();
+    await withTimesheetWriteLock(async () => {
+      await loadFromDisk();
+    });
   
     // options (all optional)
     const requestedUser = interaction.options.getUser("user");
@@ -1500,6 +1592,9 @@ client.on("interactionCreate", async interaction => {
 (async () => {
   await loadFromGitHub();
   await persist(); // persist already merges safely
+
+  await autoClockOutReachedSessions();
+  startAutoClockOutWatcher();
 
   startKeepAlive();
   await client.login(process.env.DISCORD_TOKEN);
