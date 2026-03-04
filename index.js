@@ -9,7 +9,6 @@ import { startKeepAlive } from "./keepAlive.js";
 const PH_TZ = "Asia/Manila";
 const DATA_FILE = "./timesheet.json";
 const TOPUP_FILE = "./topup.json";
-const FREECASH_REPORTS_CHANNEL_ID = process.env.FREECASH_REPORTS_CHANNEL_ID || "";
 const TIME_TRACKER_CHANNEL_ID = process.env.TIME_TRACKER_CHANNEL_ID || "1460301758940188733";
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
@@ -263,24 +262,8 @@ function extractTopupAmounts(content) {
   return amounts;
 }
 
-function isFreecashReportsThread(channel) {
-  if (!channel?.isThread?.()) return false;
-
-  const parentId = channel.parentId || "";
-  const parentName = (channel.parent?.name || "").toLowerCase();
-  const byId = !!FREECASH_REPORTS_CHANNEL_ID && parentId === FREECASH_REPORTS_CHANNEL_ID;
-  const byName = parentName === "freecash-reports";
-
-  // Accept either explicit env ID match OR fallback forum name match.
-  const matches = byId || byName;
-
-  if (!matches) {
-    console.log(
-      `[TOTAL_DEBUG] freecash check failed parentId=${parentId || "none"} parentName=${parentName || "none"} envForumId=${FREECASH_REPORTS_CHANNEL_ID || "unset"}`
-    );
-  }
-
-  return matches;
+function isTrackableTopupThread(channel) {
+  return !!channel?.isThread?.();
 }
 
 function getOrCreateTopupThreadBucket(channel) {
@@ -356,6 +339,13 @@ async function safeGetMember(interaction, userId) {
     interaction.guild.members.cache.get(userId) ||
     await interaction.guild.members.fetch(userId).catch(() => null)
   );
+}
+
+async function resolveInteractionChannel(interaction) {
+  if (interaction.channel) return interaction.channel;
+  if (!interaction.inGuild() || !interaction.guild) return null;
+
+  return interaction.guild.channels.fetch(interaction.channelId).catch(() => null);
 }
 
 async function commitFileToGitHub({
@@ -1017,7 +1007,7 @@ client.on("messageCreate", async message => {
   try {
     if (message.author?.bot) return;
     if (!message.inGuild()) return;
-    if (!isFreecashReportsThread(message.channel)) return;
+    if (!isTrackableTopupThread(message.channel)) return;
 
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
@@ -1101,10 +1091,11 @@ client.on("interactionCreate", async interaction => {
 
   if (interaction.commandName === "total") {
     const managerAllowed = hasManagerRoleById(interaction.user.id);
-    const inFreecashThread = isFreecashReportsThread(interaction.channel);
+    const resolvedChannel = await resolveInteractionChannel(interaction);
+    const inTrackableThread = isTrackableTopupThread(resolvedChannel);
 
     console.log(
-      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} threadName=${interaction.channel?.name || "unknown"} parentId=${interaction.channel?.parentId || "none"} parentName=${interaction.channel?.parent?.name || "none"}`
+      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} threadResolved=${!!resolvedChannel} threadName=${resolvedChannel?.name || "unknown"} parentId=${resolvedChannel?.parentId || "none"} parentName=${resolvedChannel?.parent?.name || "none"}`
     );
 
     if (!managerAllowed) {
@@ -1112,15 +1103,15 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only managers can use this command.");
     }
 
-    if (!inFreecashThread) {
-      console.log("[TOTAL_DEBUG] denied reason=not_freecash_thread");
-      return interaction.editReply("❌ Use /total inside a **freecash-reports** thread.");
+    if (!inTrackableThread) {
+      console.log("[TOTAL_DEBUG] denied reason=not_thread_or_not_resolved");
+      return interaction.editReply("❌ Use /total inside a thread/post.");
     }
 
     await loadTopupFromDisk();
 
-    const parentId = interaction.channel.parentId;
-    const threadId = interaction.channel.id;
+    const parentId = resolvedChannel.parentId;
+    const threadId = resolvedChannel.id;
     const entries = topupData.channels?.[parentId]?.threads?.[threadId]?.entries || [];
     const matched = entries.filter(e => Array.isArray(e.amounts) ? e.amounts.length > 0 : Number(e.amountTotal) > 0);
     const sum = matched.reduce((total, entry) => {
@@ -1139,7 +1130,7 @@ client.on("interactionCreate", async interaction => {
         title: "💵 Thread Topup Total",
         color: 0x2ecc71,
         fields: [
-          { name: "🧵 Thread", value: interaction.channel.name || threadId, inline: false },
+          { name: "🧵 Thread", value: resolvedChannel.name || threadId, inline: false },
           { name: "📌 Counted Entries", value: String(matched.length), inline: true },
           { name: "🧮 Total", value: `$${sum.toFixed(2)}`, inline: true },
         ],
