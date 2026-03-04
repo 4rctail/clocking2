@@ -1137,21 +1137,43 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only managers can use this command.");
     }
 
-    await loadTopupFromDisk();
+    let matchedCount = 0;
+    let sum = 0;
 
-    const channelBucket = topupData.channels?.[topupContext.channelId];
-    const allEntries = Object.values(channelBucket?.threads || {}).flatMap((t) => t?.entries || []);
+    await withTopupWriteLock(async () => {
+      await loadTopupFromDisk();
 
-    const matched = allEntries.filter(e => Array.isArray(e.amounts) ? e.amounts.length > 0 : Number(e.amountTotal) > 0);
-    const sum = matched.reduce((total, entry) => {
-      if (Array.isArray(entry.amounts)) {
-        return total + entry.amounts.reduce((a, b) => a + (Number(b) || 0), 0);
+      const channelBucket = topupData.channels?.[topupContext.channelId];
+      const channelIdMatches =
+        !!channelBucket &&
+        String(channelBucket.channelId || "") === String(topupContext.channelId);
+
+      if (!channelIdMatches) {
+        matchedCount = 0;
+        sum = 0;
+        return;
       }
-      return total + (Number(entry.amountTotal) || 0);
-    }, 0);
+
+      const allEntries = Object.values(channelBucket.threads || {}).flatMap((t) => t?.entries || []);
+      const matched = allEntries.filter((e) =>
+        Array.isArray(e.amounts) ? e.amounts.length > 0 : Number(e.amountTotal) > 0
+      );
+
+      sum = matched.reduce((total, entry) => {
+        if (Array.isArray(entry.amounts)) {
+          return total + entry.amounts.reduce((a, b) => a + (Number(b) || 0), 0);
+        }
+        return total + (Number(entry.amountTotal) || 0);
+      }, 0);
+      matchedCount = matched.length;
+
+      // Reset topup tracking after reporting the current channel's total.
+      topupData = { channels: {} };
+      await persistTopup();
+    });
 
     console.log(
-      `[TOTAL_DEBUG] computed channelId=${topupContext.channelId} channelName=${topupContext.channelName} entries=${allEntries.length} matchedEntries=${matched.length} sum=${sum.toFixed(2)}`
+      `[TOTAL_DEBUG] computed channelId=${topupContext.channelId} channelName=${topupContext.channelName} matchedEntries=${matchedCount} sum=${sum.toFixed(2)} resetTopup=true`
     );
 
     return interaction.editReply({
@@ -1160,7 +1182,7 @@ client.on("interactionCreate", async interaction => {
         color: 0x2ecc71,
         fields: [
           { name: "🆔 Channel ID", value: String(topupContext.channelId), inline: false },
-          { name: "📌 Counted Entries", value: String(matched.length), inline: true },
+          { name: "📌 Counted Entries", value: String(matchedCount), inline: true },
           { name: "🧮 Total", value: `$${sum.toFixed(2)}`, inline: true },
         ],
         timestamp: new Date().toISOString(),
