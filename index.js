@@ -10,6 +10,7 @@ const PH_TZ = "Asia/Manila";
 const DATA_FILE = "./timesheet.json";
 const TOPUP_FILE = "./topup.json";
 const FREECASH_REPORTS_CHANNEL_ID = process.env.FREECASH_REPORTS_CHANNEL_ID || "";
+const TIME_TRACKER_CHANNEL_ID = process.env.TIME_TRACKER_CHANNEL_ID || "1460301758940188733";
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -709,6 +710,43 @@ function elapsed(startISO) {
 
 let autoClockOutSweepRunning = false;
 
+async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
+  if (!client.isReady()) {
+    console.warn("⚠ Auto clock-out embed skipped: Discord client is not ready yet.");
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(TIME_TRACKER_CHANNEL_ID);
+    if (!channel || typeof channel.send !== "function") {
+      console.warn("⚠ Auto clock-out embed skipped: target channel is not sendable.");
+      return;
+    }
+
+    await channel.send({
+      embeds: [{
+        title: "⏲️ Auto Clock-Out (8 Hours)",
+        color: 0xe67e22,
+        fields: [
+          { name: "👤 User", value: name || userId, inline: true },
+          { name: "🆔 User ID", value: userId, inline: true },
+          { name: "▶️ Started", value: formatDate(start), inline: false },
+          { name: "⏹ Ended (Auto)", value: formatDate(end), inline: false },
+          { name: "⏱ Duration", value: `${Math.round(hours * 100) / 100}h`, inline: true },
+          {
+            name: "ℹ️ Reason",
+            value: "Session reached the 8-hour limit and was automatically clocked out.",
+            inline: false,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    });
+  } catch (err) {
+    console.error("Failed to send auto clock-out embed:", err);
+  }
+}
+
 async function autoClockOutReachedSessions() {
   if (autoClockOutSweepRunning) return;
   autoClockOutSweepRunning = true;
@@ -734,6 +772,7 @@ async function autoClockOutReachedSessions() {
         const start = record.active;
         const end = getAutoClockOutEndISO(start);
         const hours = diffHours(start, end);
+        const displayName = record.name || userId;
 
         record.logs ??= [];
         record.logs.push({
@@ -748,6 +787,14 @@ async function autoClockOutReachedSessions() {
         console.log(
           `⏲ AUTO_8H clock-out user=${userId} start=${start} end=${end}`
         );
+
+        await sendAutoClockOutEmbed({
+          userId,
+          name: displayName,
+          start,
+          end,
+          hours,
+        });
       }
 
       if (hasChanges) {
@@ -1011,7 +1058,6 @@ client.on("interactionCreate", async interaction => {
       ephemeral: true,
     });
   }
-  const TIME_TRACKER_CHANNEL_ID = "1460301758940188733";
   const trackerCommands = new Set([
     "clockin",
     "clockout",
