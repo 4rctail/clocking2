@@ -33,6 +33,24 @@ client.on("error", (err) => {
   console.error("Discord client error:", err);
 });
 
+client.on("shardError", (err, shardId) => {
+  console.error(`Discord shard ${shardId} websocket error:`, err);
+});
+
+client.on("shardDisconnect", (event, shardId) => {
+  console.warn(
+    `Discord shard ${shardId} disconnected (code=${event.code}, reason=${event.reason || "unknown"}).`
+  );
+});
+
+client.on("shardReconnecting", (shardId) => {
+  console.log(`Discord shard ${shardId} reconnecting...`);
+});
+
+client.on("shardResume", (shardId, replayedEvents) => {
+  console.log(`Discord shard ${shardId} resumed (replayed ${replayedEvents} events).`);
+});
+
 const PUBLIC_COMMANDS = new Set([
   "clockin",
   "clockout",
@@ -727,6 +745,11 @@ function hasLeaderRoleById(userId) {
 
 process.on("unhandledRejection", err => {
   console.error("Unhandled rejection:", err);
+});
+
+// Last-resort protection so transient websocket/network faults do not kill the bot process.
+process.on("uncaughtException", err => {
+  console.error("Uncaught exception (process kept alive):", err);
 });
 
 // =======================
@@ -1597,6 +1620,19 @@ client.on("interactionCreate", async interaction => {
   startAutoClockOutWatcher();
 
   startKeepAlive();
-  await client.login(process.env.DISCORD_TOKEN);
-  console.log(`✅ Logged in as ${client.user.tag}`);
+
+  const loginWithRetry = async () => {
+    while (true) {
+      try {
+        await client.login(process.env.DISCORD_TOKEN);
+        console.log(`✅ Logged in as ${client.user.tag}`);
+        return;
+      } catch (err) {
+        console.error("❌ Discord login failed. Retrying in 15s:", err);
+        await new Promise(resolve => setTimeout(resolve, 15000));
+      }
+    }
+  };
+
+  await loginWithRetry();
 })();
