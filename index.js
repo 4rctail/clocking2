@@ -8,6 +8,9 @@ import { startKeepAlive } from "./keepAlive.js";
 // =======================
 const PH_TZ = "Asia/Manila";
 const DATA_FILE = "./timesheet.json";
+const TOPUP_FILE = "./topup.json";
+const FREECASH_REPORTS_CHANNEL_ID = process.env.FREECASH_REPORTS_CHANNEL_ID || "";
+const TIME_TRACKER_CHANNEL_ID = process.env.TIME_TRACKER_CHANNEL_ID || "1460301758940188733";
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -25,12 +28,32 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
 });
 
 // Prevent crashes from unhandled Discord errors
 client.on("error", (err) => {
   console.error("Discord client error:", err);
+});
+
+client.on("shardError", (err, shardId) => {
+  console.error(`Discord shard ${shardId} websocket error:`, err);
+});
+
+client.on("shardDisconnect", (event, shardId) => {
+  console.warn(
+    `Discord shard ${shardId} disconnected (code=${event.code}, reason=${event.reason || "unknown"}).`
+  );
+});
+
+client.on("shardReconnecting", (shardId) => {
+  console.log(`Discord shard ${shardId} reconnecting...`);
+});
+
+client.on("shardResume", (shardId, replayedEvents) => {
+  console.log(`Discord shard ${shardId} resumed (replayed ${replayedEvents} events).`);
 });
 
 const PUBLIC_COMMANDS = new Set([
@@ -40,7 +63,9 @@ const PUBLIC_COMMANDS = new Set([
 ]);
 
 let timesheet = {};
+let topupData = { channels: {} };
 let gitCommitTimer = null;
+let topupGitCommitTimer = null;
 
 function mergeUserData(oldKey, newUserId) {
   const oldData = timesheet[oldKey];
@@ -165,6 +190,121 @@ async function loadFromDisk() {
   } catch {
     timesheet = {};
   }
+}
+
+function ensureTopupShape(input) {
+  if (!input || typeof input !== "object") return { channels: {} };
+  if (!input.channels || typeof input.channels !== "object") input.channels = {};
+  return input;
+}
+
+async function loadTopupFromDisk() {
+  try {
+    const raw = await fs.readFile(TOPUP_FILE, "utf8");
+    topupData = ensureTopupShape(JSON.parse(raw));
+  } catch {
+    topupData = { channels: {} };
+  }
+}
+
+function queueTopupCommit() {
+  if (topupGitCommitTimer) return;
+
+  topupGitCommitTimer = setTimeout(async () => {
+    topupGitCommitTimer = null;
+    await commitTopupToGitHub();
+  }, 3000);
+}
+
+async function persistTopup() {
+  topupData = ensureTopupShape(topupData);
+  await fs.writeFile(TOPUP_FILE, JSON.stringify(topupData, null, 2));
+  queueTopupCommit();
+}
+
+function extractTopupAmounts(content) {
+  if (!content || typeof content !== "string") return [];
+
+  const candidates = content
+    .split("|")
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  const amounts = [];
+
+  for (const candidate of candidates) {
+    const normalized = candidate.replace(/,/g, "").trim();
+
+    // Supported formats:
+    // - 20$
+    // - $20
+    // - 20 $
+    // - USD 20
+    // - 20 USD
+    const patterns = [
+      /^(\d+(?:\.\d{1,2})?)\s*\$$/i,
+      /^\$\s*(\d+(?:\.\d{1,2})?)$/i,
+      /^usd\s*(\d+(?:\.\d{1,2})?)$/i,
+      /^(\d+(?:\.\d{1,2})?)\s*usd$/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = normalized.match(pattern);
+      if (!match) continue;
+
+      const value = Number(match[1]);
+      if (Number.isFinite(value)) {
+        amounts.push(value);
+      }
+      break;
+    }
+  }
+
+  return amounts;
+}
+
+function isFreecashReportsThread(channel) {
+  if (!channel?.isThread?.()) return false;
+
+  const parentId = channel.parentId || "";
+  const parentName = channel.parent?.name || "";
+
+  if (FREECASH_REPORTS_CHANNEL_ID) {
+    return parentId === FREECASH_REPORTS_CHANNEL_ID;
+  }
+
+  return parentName === "freecash-reports";
+}
+
+function getOrCreateTopupThreadBucket(channel) {
+  const parentId = channel.parentId;
+  if (!parentId) return null;
+
+  topupData = ensureTopupShape(topupData);
+  const channels = topupData.channels;
+
+  if (!channels[parentId]) {
+    channels[parentId] = {
+      channelId: parentId,
+      channelName: channel.parent?.name || "unknown",
+      threads: {},
+    };
+  }
+
+  const channelBucket = channels[parentId];
+  channelBucket.threads ??= {};
+
+  if (!channelBucket.threads[channel.id]) {
+    channelBucket.threads[channel.id] = {
+      threadId: channel.id,
+      threadName: channel.name || "unknown-thread",
+      createdAt: new Date().toISOString(),
+      lastMessageAt: null,
+      entries: [],
+    };
+  }
+
+  return channelBucket.threads[channel.id];
 }
 
 async function safeEdit(interaction, payload) {
@@ -449,10 +589,17 @@ const liveStatusTimers = new Map();
 // Serialize timesheet load/mutate/persist operations to prevent race conditions
 // between interaction handlers and the background auto clock-out sweep.
 let timesheetWriteQueue = Promise.resolve();
+let topupWriteQueue = Promise.resolve();
 
 function withTimesheetWriteLock(task) {
   const run = timesheetWriteQueue.then(task, task);
   timesheetWriteQueue = run.catch(() => {});
+  return run;
+}
+
+function withTopupWriteLock(task) {
+  const run = topupWriteQueue.then(task, task);
+  topupWriteQueue = run.catch(() => {});
   return run;
 }
 
@@ -563,6 +710,43 @@ function elapsed(startISO) {
 
 let autoClockOutSweepRunning = false;
 
+async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
+  if (!client.isReady()) {
+    console.warn("⚠ Auto clock-out embed skipped: Discord client is not ready yet.");
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(TIME_TRACKER_CHANNEL_ID);
+    if (!channel || typeof channel.send !== "function") {
+      console.warn("⚠ Auto clock-out embed skipped: target channel is not sendable.");
+      return;
+    }
+
+    await channel.send({
+      embeds: [{
+        title: "⏲️ Auto Clock-Out (8 Hours)",
+        color: 0xe67e22,
+        fields: [
+          { name: "👤 User", value: name || userId, inline: true },
+          { name: "🆔 User ID", value: userId, inline: true },
+          { name: "▶️ Started", value: formatDate(start), inline: false },
+          { name: "⏹ Ended (Auto)", value: formatDate(end), inline: false },
+          { name: "⏱ Duration", value: `${Math.round(hours * 100) / 100}h`, inline: true },
+          {
+            name: "ℹ️ Reason",
+            value: "Session reached the 8-hour limit and was automatically clocked out.",
+            inline: false,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    });
+  } catch (err) {
+    console.error("Failed to send auto clock-out embed:", err);
+  }
+}
+
 async function autoClockOutReachedSessions() {
   if (autoClockOutSweepRunning) return;
   autoClockOutSweepRunning = true;
@@ -588,6 +772,7 @@ async function autoClockOutReachedSessions() {
         const start = record.active;
         const end = getAutoClockOutEndISO(start);
         const hours = diffHours(start, end);
+        const displayName = record.name || userId;
 
         record.logs ??= [];
         record.logs.push({
@@ -602,6 +787,14 @@ async function autoClockOutReachedSessions() {
         console.log(
           `⏲ AUTO_8H clock-out user=${userId} start=${start} end=${end}`
         );
+
+        await sendAutoClockOutEmbed({
+          userId,
+          name: displayName,
+          start,
+          end,
+          hours,
+        });
       }
 
       if (hasChanges) {
@@ -656,6 +849,35 @@ async function loadFromGitHub() {
   await fs.writeFile(DATA_FILE, decoded);
 
   console.log("✅ Loaded timesheet from GitHub");
+}
+
+async function loadTopupFromGitHub() {
+  if (!GIT_TOKEN) return;
+
+  const url = `https://api.github.com/repos/${GIT_USER}/${GIT_REPO}/contents/topup.json?ref=${GIT_BRANCH}`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${GIT_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "clocking-bot",
+    },
+  });
+
+  if (!res.ok) {
+    console.warn("⚠ No topup.json on GitHub yet");
+    topupData = { channels: {} };
+    await persistTopup();
+    return;
+  }
+
+  const json = await res.json();
+  const decoded = Buffer.from(json.content, "base64").toString("utf8");
+
+  topupData = ensureTopupShape(JSON.parse(decoded));
+  await fs.writeFile(TOPUP_FILE, JSON.stringify(topupData, null, 2));
+
+  console.log("✅ Loaded topup from GitHub");
 }
 
 function queueGitCommit() {
@@ -717,6 +939,53 @@ async function commitToGitHub() {
   console.log("✅ Timesheet committed to GitHub");
 }
 
+async function commitTopupToGitHub() {
+  if (!GIT_TOKEN) return;
+
+  const api = `https://api.github.com/repos/${GIT_USER}/${GIT_REPO}/contents/topup.json`;
+  const content = Buffer.from(
+    JSON.stringify(ensureTopupShape(topupData), null, 2)
+  ).toString("base64");
+
+  let sha = null;
+
+  const get = await fetch(api, {
+    headers: {
+      Authorization: `Bearer ${GIT_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "clocking-bot",
+    },
+  });
+
+  if (get.ok) {
+    sha = (await get.json()).sha;
+  }
+
+  const put = await fetch(api, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${GIT_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "clocking-bot",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: "Update topup",
+      content,
+      sha,
+      branch: GIT_BRANCH,
+    }),
+  });
+
+  if (!put.ok) {
+    const err = await put.text();
+    console.error("❌ Topup GitHub commit failed:", err);
+    return;
+  }
+
+  console.log("✅ Topup committed to GitHub");
+}
+
 function hasManagerRoleById(userId) {
   return MANAGER_IDS.includes(userId);
 }
@@ -727,6 +996,54 @@ function hasLeaderRoleById(userId) {
 
 process.on("unhandledRejection", err => {
   console.error("Unhandled rejection:", err);
+});
+
+// Last-resort protection so transient websocket/network faults do not kill the bot process.
+process.on("uncaughtException", err => {
+  console.error("Uncaught exception (process kept alive):", err);
+});
+
+// =======================
+// MESSAGE INGEST (FREECASH THREADS)
+// =======================
+client.on("messageCreate", async message => {
+  try {
+    if (message.author?.bot) return;
+    if (!message.inGuild()) return;
+    if (!isFreecashReportsThread(message.channel)) return;
+
+    await withTopupWriteLock(async () => {
+      await loadTopupFromDisk();
+
+      const amounts = extractTopupAmounts(message.content || "");
+      const amountTotal = amounts.reduce((sum, value) => sum + value, 0);
+
+      const threadBucket = getOrCreateTopupThreadBucket(message.channel);
+      if (!threadBucket) return;
+
+      threadBucket.threadName = message.channel.name || threadBucket.threadName;
+      threadBucket.lastMessageAt = new Date().toISOString();
+      threadBucket.entries.push({
+        messageId: message.id,
+        userId: message.author.id,
+        username: message.member?.displayName || message.author.globalName || message.author.username,
+        raw: message.content || "",
+        amounts,
+        amountTotal,
+        createdAt: message.createdAt.toISOString(),
+      });
+
+      await persistTopup();
+
+      if (amounts.length > 0) {
+        console.log(`💵 Topup captured thread=${message.channel.id} msg=${message.id} amounts=${amounts.join(",")} total=${amountTotal}`);
+      } else {
+        console.log(`📝 Thread message logged (no money token) thread=${message.channel.id} msg=${message.id}`);
+      }
+    });
+  } catch (err) {
+    console.error("Topup message ingest failed:", err);
+  }
 });
 
 // =======================
@@ -741,15 +1058,24 @@ client.on("interactionCreate", async interaction => {
       ephemeral: true,
     });
   }
-  const TIME_TRACKER_CHANNEL_ID = "1460301758940188733";
-    // 🔒 CHANNEL LOCK
-  if (interaction.channelId !== TIME_TRACKER_CHANNEL_ID) {
+  const trackerCommands = new Set([
+    "clockin",
+    "clockout",
+    "forceclockout",
+    "status",
+    "timesheet",
+    "logtracker",
+    "edit",
+    "totalhr",
+  ]);
+
+  if (trackerCommands.has(interaction.commandName) && interaction.channelId !== TIME_TRACKER_CHANNEL_ID) {
     return interaction.reply({
       content: "❌ This command can only be used in **#time-tracker**.",
       ephemeral: true,
     });
   }
-  
+
   if (
     interaction.commandName === "forceclockout" &&
     !interaction.options.data.length
@@ -765,6 +1091,43 @@ client.on("interactionCreate", async interaction => {
   await interaction.deferReply({
     ephemeral: !isPublic,
   });
+
+  if (interaction.commandName === "total") {
+    if (!hasManagerRoleById(interaction.user.id)) {
+      return interaction.editReply("❌ Only managers can use this command.");
+    }
+
+    if (!isFreecashReportsThread(interaction.channel)) {
+      return interaction.editReply("❌ Use /total inside a **freecash-reports** thread.");
+    }
+
+    await loadTopupFromDisk();
+
+    const parentId = interaction.channel.parentId;
+    const threadId = interaction.channel.id;
+    const entries = topupData.channels?.[parentId]?.threads?.[threadId]?.entries || [];
+    const matched = entries.filter(e => Array.isArray(e.amounts) ? e.amounts.length > 0 : Number(e.amountTotal) > 0);
+    const sum = matched.reduce((total, entry) => {
+      if (Array.isArray(entry.amounts)) {
+        return total + entry.amounts.reduce((a, b) => a + (Number(b) || 0), 0);
+      }
+      return total + (Number(entry.amountTotal) || 0);
+    }, 0);
+
+    return interaction.editReply({
+      embeds: [{
+        title: "💵 Thread Topup Total",
+        color: 0x2ecc71,
+        fields: [
+          { name: "🧵 Thread", value: interaction.channel.name || threadId, inline: false },
+          { name: "📌 Counted Entries", value: String(matched.length), inline: true },
+          { name: "🧮 Total", value: `$${sum.toFixed(2)}`, inline: true },
+        ],
+        footer: { text: `Thread ID: ${threadId}` },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+  }
 
     
     // ==========================================================
@@ -1593,10 +1956,26 @@ client.on("interactionCreate", async interaction => {
   await loadFromGitHub();
   await persist(); // persist already merges safely
 
+  await loadTopupFromDisk();
+  await loadTopupFromGitHub();
+
   await autoClockOutReachedSessions();
   startAutoClockOutWatcher();
 
   startKeepAlive();
-  await client.login(process.env.DISCORD_TOKEN);
-  console.log(`✅ Logged in as ${client.user.tag}`);
+
+  const loginWithRetry = async () => {
+    while (true) {
+      try {
+        await client.login(process.env.DISCORD_TOKEN);
+        console.log(`✅ Logged in as ${client.user.tag}`);
+        return;
+      } catch (err) {
+        console.error("❌ Discord login failed. Retrying in 15s:", err);
+        await new Promise(resolve => setTimeout(resolve, 15000));
+      }
+    }
+  };
+
+  await loginWithRetry();
 })();
