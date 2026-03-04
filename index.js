@@ -267,13 +267,12 @@ function isFreecashReportsThread(channel) {
   if (!channel?.isThread?.()) return false;
 
   const parentId = channel.parentId || "";
-  const parentName = channel.parent?.name || "";
+  const parentName = (channel.parent?.name || "").toLowerCase();
+  const byId = !!FREECASH_REPORTS_CHANNEL_ID && parentId === FREECASH_REPORTS_CHANNEL_ID;
+  const byName = parentName === "freecash-reports";
 
-  if (FREECASH_REPORTS_CHANNEL_ID) {
-    return parentId === FREECASH_REPORTS_CHANNEL_ID;
-  }
-
-  return parentName === "freecash-reports";
+  // Accept either explicit env ID match OR fallback forum name match.
+  return byId || byName;
 }
 
 function getOrCreateTopupThreadBucket(channel) {
