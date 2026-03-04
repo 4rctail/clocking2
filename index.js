@@ -262,48 +262,57 @@ function extractTopupAmounts(content) {
   return amounts;
 }
 
-function isTrackableTopupThread(channel) {
-  if (!channel) return false;
-  if (typeof channel.isThread === "function" && channel.isThread()) return true;
+function normalizeKey(value, fallback) {
+  return (value || fallback).toLowerCase().trim();
+}
 
-  const threadTypes = new Set([
-    ChannelType.PublicThread,
-    ChannelType.PrivateThread,
-    ChannelType.AnnouncementThread,
-  ]);
+function getTopupContext(channel) {
+  const isThread = !!channel && typeof channel.isThread === "function" && channel.isThread();
+  const channelName = isThread
+    ? (channel.parent?.name || "unknown-channel")
+    : (channel?.name || "unknown-channel");
+  const threadName = channel?.name || "unknown-thread";
 
-  return threadTypes.has(channel.type);
+  return {
+    channelId: isThread
+      ? (channel.parentId || `name:${normalizeKey(channelName, "unknown-channel")}`)
+      : (channel?.id || `name:${normalizeKey(channelName, "unknown-channel")}`),
+    channelName,
+    threadId: channel?.id || `name:${normalizeKey(threadName, "unknown-thread")}`,
+    threadName,
+    isThread,
+  };
 }
 
 function getOrCreateTopupThreadBucket(channel) {
-  const parentId = channel.parentId;
-  if (!parentId) return null;
+  const ctx = getTopupContext(channel);
 
   topupData = ensureTopupShape(topupData);
   const channels = topupData.channels;
 
-  if (!channels[parentId]) {
-    channels[parentId] = {
-      channelId: parentId,
-      channelName: channel.parent?.name || "unknown",
+  if (!channels[ctx.channelId]) {
+    channels[ctx.channelId] = {
+      channelId: ctx.channelId,
+      channelName: ctx.channelName,
       threads: {},
     };
   }
 
-  const channelBucket = channels[parentId];
+  const channelBucket = channels[ctx.channelId];
+  channelBucket.channelName = ctx.channelName;
   channelBucket.threads ??= {};
 
-  if (!channelBucket.threads[channel.id]) {
-    channelBucket.threads[channel.id] = {
-      threadId: channel.id,
-      threadName: channel.name || "unknown-thread",
+  if (!channelBucket.threads[ctx.threadId]) {
+    channelBucket.threads[ctx.threadId] = {
+      threadId: ctx.threadId,
+      threadName: ctx.threadName,
       createdAt: new Date().toISOString(),
       lastMessageAt: null,
       entries: [],
     };
   }
 
-  return channelBucket.threads[channel.id];
+  return { bucket: channelBucket.threads[ctx.threadId], ctx };
 }
 
 async function safeEdit(interaction, payload) {
@@ -1034,7 +1043,6 @@ client.on("messageCreate", async message => {
   try {
     if (message.author?.bot) return;
     if (!message.inGuild()) return;
-    if (!isTrackableTopupThread(message.channel)) return;
 
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
@@ -1042,10 +1050,11 @@ client.on("messageCreate", async message => {
       const amounts = extractTopupAmounts(message.content || "");
       const amountTotal = amounts.reduce((sum, value) => sum + value, 0);
 
-      const threadBucket = getOrCreateTopupThreadBucket(message.channel);
-      if (!threadBucket) return;
+      const result = getOrCreateTopupThreadBucket(message.channel);
+      const threadBucket = result.bucket;
+      const topupContext = result.ctx;
 
-      threadBucket.threadName = message.channel.name || threadBucket.threadName;
+      threadBucket.threadName = topupContext.threadName || threadBucket.threadName;
       threadBucket.lastMessageAt = new Date().toISOString();
       threadBucket.entries.push({
         messageId: message.id,
@@ -1060,9 +1069,9 @@ client.on("messageCreate", async message => {
       await persistTopup();
 
       if (amounts.length > 0) {
-        console.log(`💵 Topup captured thread=${message.channel.id} msg=${message.id} amounts=${amounts.join(",")} total=${amountTotal}`);
+        console.log(`💵 Topup captured channel=${topupContext.channelName} thread=${topupContext.threadName} threadId=${topupContext.threadId} msg=${message.id} amounts=${amounts.join(",")} total=${amountTotal}`);
       } else {
-        console.log(`📝 Thread message logged (no money token) thread=${message.channel.id} msg=${message.id}`);
+        console.log(`📝 Topup message logged (no money token) channel=${topupContext.channelName} thread=${topupContext.threadName} threadId=${topupContext.threadId} msg=${message.id}`);
       }
     });
   } catch (err) {
@@ -1119,12 +1128,11 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "total") {
     const managerAllowed = hasManagerRoleById(interaction.user.id);
     const resolvedChannel = await resolveInteractionChannel(interaction);
-    const rawInteractionThreadLike = isTrackableTopupThread(interaction.channel);
-    const resolvedThreadLike = isTrackableTopupThread(resolvedChannel);
-    const threadId = interaction.channelId;
+    const contextChannel = resolvedChannel || interaction.channel;
+    const topupContext = getTopupContext(contextChannel);
 
     console.log(
-      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} rawThreadLike=${rawInteractionThreadLike} resolvedThreadLike=${resolvedThreadLike} threadResolved=${!!resolvedChannel} threadName=${resolvedChannel?.name || interaction.channel?.name || "unknown"} parentId=${resolvedChannel?.parentId || interaction.channel?.parentId || "none"} parentName=${resolvedChannel?.parent?.name || interaction.channel?.parent?.name || "none"}`
+      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} channelName=${topupContext.channelName} threadName=${topupContext.threadName} threadId=${topupContext.threadId} threadResolved=${!!resolvedChannel}`
     );
 
     if (!managerAllowed) {
@@ -1132,31 +1140,23 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only managers can use this command.");
     }
 
-    if (!rawInteractionThreadLike && !resolvedThreadLike) {
-      console.log(
-        `[TOTAL_DEBUG] denied reason=not_thread rawInteractionChannelType=${interaction.channel?.type ?? "none"} resolvedChannelType=${resolvedChannel?.type ?? "none"}`
-      );
-      return interaction.editReply("❌ Use /total inside a thread/post.");
-    }
-
     await loadTopupFromDisk();
 
-    let parentId = resolvedChannel?.parentId || interaction.channel?.parentId || null;
-    let entries = [];
+    const byName = (value, target) =>
+      (value || "").toLowerCase().trim() === (target || "").toLowerCase().trim();
 
-    if (parentId) {
-      entries = topupData.channels?.[parentId]?.threads?.[threadId]?.entries || [];
-    }
+    let entries = topupData.channels?.[topupContext.channelId]?.threads?.[topupContext.threadId]?.entries || [];
 
-    // Fallback: if parentId is missing/unresolved, locate thread by ID across all parents.
+    // Name fallback: channel + thread name pair (requested behavior).
     if (!entries.length) {
-      for (const [candidateParentId, parentData] of Object.entries(topupData.channels || {})) {
-        const candidateEntries = parentData?.threads?.[threadId]?.entries;
-        if (Array.isArray(candidateEntries)) {
-          parentId = candidateParentId;
-          entries = candidateEntries;
-          break;
+      for (const parentData of Object.values(topupData.channels || {})) {
+        for (const threadData of Object.values(parentData?.threads || {})) {
+          if (byName(parentData?.channelName, topupContext.channelName) && byName(threadData?.threadName, topupContext.threadName)) {
+            entries = threadData.entries || [];
+            break;
+          }
         }
+        if (entries.length) break;
       }
     }
 
@@ -1169,7 +1169,7 @@ client.on("interactionCreate", async interaction => {
     }, 0);
 
     console.log(
-      `[TOTAL_DEBUG] computed threadId=${threadId} parentId=${parentId || "none"} entries=${entries.length} matchedEntries=${matched.length} sum=${sum.toFixed(2)}`
+      `[TOTAL_DEBUG] computed channelName=${topupContext.channelName} threadName=${topupContext.threadName} threadId=${topupContext.threadId} entries=${entries.length} matchedEntries=${matched.length} sum=${sum.toFixed(2)}`
     );
 
     return interaction.editReply({
@@ -1177,11 +1177,12 @@ client.on("interactionCreate", async interaction => {
         title: "💵 Thread Topup Total",
         color: 0x2ecc71,
         fields: [
-          { name: "🧵 Thread", value: resolvedChannel?.name || interaction.channel?.name || threadId, inline: false },
+          { name: "📁 Channel", value: topupContext.channelName, inline: false },
+          { name: "🧵 Thread", value: topupContext.threadName || topupContext.threadId, inline: false },
           { name: "📌 Counted Entries", value: String(matched.length), inline: true },
           { name: "🧮 Total", value: `$${sum.toFixed(2)}`, inline: true },
         ],
-        footer: { text: `Thread ID: ${threadId}` },
+        footer: { text: `Thread ID: ${topupContext.threadId}` },
         timestamp: new Date().toISOString(),
       }],
     });
