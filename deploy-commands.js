@@ -78,8 +78,20 @@ const commands = [
     ],
   },
   {
+    name: "topup",
+    description: "Record a topup entry for this channel/thread",
+    options: [
+      {
+        name: "entry",
+        type: 3,
+        description: "Topup text, e.g. 20$ | 333 cvv | troy | 5244",
+        required: true,
+      },
+    ],
+  },
+  {
     name: "total",
-    description: "Show total topup amount for this freecash thread (Manager only)",
+    description: "Show total topup amount for this channel (Manager only)",
   },
   {
     name: "forceclockout",
