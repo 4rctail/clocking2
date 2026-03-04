@@ -272,7 +272,15 @@ function isFreecashReportsThread(channel) {
   const byName = parentName === "freecash-reports";
 
   // Accept either explicit env ID match OR fallback forum name match.
-  return byId || byName;
+  const matches = byId || byName;
+
+  if (!matches) {
+    console.log(
+      `[TOTAL_DEBUG] freecash check failed parentId=${parentId || "none"} parentName=${parentName || "none"} envForumId=${FREECASH_REPORTS_CHANNEL_ID || "unset"}`
+    );
+  }
+
+  return matches;
 }
 
 function getOrCreateTopupThreadBucket(channel) {
@@ -1092,11 +1100,20 @@ client.on("interactionCreate", async interaction => {
   });
 
   if (interaction.commandName === "total") {
-    if (!hasManagerRoleById(interaction.user.id)) {
+    const managerAllowed = hasManagerRoleById(interaction.user.id);
+    const inFreecashThread = isFreecashReportsThread(interaction.channel);
+
+    console.log(
+      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} threadName=${interaction.channel?.name || "unknown"} parentId=${interaction.channel?.parentId || "none"} parentName=${interaction.channel?.parent?.name || "none"}`
+    );
+
+    if (!managerAllowed) {
+      console.log(`[TOTAL_DEBUG] denied reason=not_manager user=${interaction.user.id}`);
       return interaction.editReply("❌ Only managers can use this command.");
     }
 
-    if (!isFreecashReportsThread(interaction.channel)) {
+    if (!inFreecashThread) {
+      console.log("[TOTAL_DEBUG] denied reason=not_freecash_thread");
       return interaction.editReply("❌ Use /total inside a **freecash-reports** thread.");
     }
 
@@ -1112,6 +1129,10 @@ client.on("interactionCreate", async interaction => {
       }
       return total + (Number(entry.amountTotal) || 0);
     }, 0);
+
+    console.log(
+      `[TOTAL_DEBUG] computed threadId=${threadId} entries=${entries.length} matchedEntries=${matched.length} sum=${sum.toFixed(2)}`
+    );
 
     return interaction.editReply({
       embeds: [{
