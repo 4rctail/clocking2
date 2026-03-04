@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits } from "discord.js";
+import { ChannelType, Client, GatewayIntentBits } from "discord.js";
 import fs from "fs/promises";
 import fetch from "node-fetch";
 import { startKeepAlive } from "./keepAlive.js";
@@ -263,7 +263,16 @@ function extractTopupAmounts(content) {
 }
 
 function isTrackableTopupThread(channel) {
-  return !!channel?.isThread?.();
+  if (!channel) return false;
+  if (typeof channel.isThread === "function" && channel.isThread()) return true;
+
+  const threadTypes = new Set([
+    ChannelType.PublicThread,
+    ChannelType.PrivateThread,
+    ChannelType.AnnouncementThread,
+  ]);
+
+  return threadTypes.has(channel.type);
 }
 
 function getOrCreateTopupThreadBucket(channel) {
@@ -343,9 +352,27 @@ async function safeGetMember(interaction, userId) {
 
 async function resolveInteractionChannel(interaction) {
   if (interaction.channel) return interaction.channel;
+
+  // 1) Global fetch can resolve threads that may not be in guild channel cache.
+  const fromClient = await client.channels.fetch(interaction.channelId).catch(() => null);
+  if (fromClient) return fromClient;
+
   if (!interaction.inGuild() || !interaction.guild) return null;
 
-  return interaction.guild.channels.fetch(interaction.channelId).catch(() => null);
+  // 2) Guild channel fetch fallback.
+  const fromGuild = await interaction.guild.channels.fetch(interaction.channelId).catch(() => null);
+  if (fromGuild) return fromGuild;
+
+  // 3) Active thread lookup fallback.
+  try {
+    const active = await interaction.guild.channels.fetchActiveThreads();
+    const fromActive = active.threads?.get(interaction.channelId);
+    if (fromActive) return fromActive;
+  } catch {
+    // ignore
+  }
+
+  return null;
 }
 
 async function commitFileToGitHub({
@@ -1092,10 +1119,12 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "total") {
     const managerAllowed = hasManagerRoleById(interaction.user.id);
     const resolvedChannel = await resolveInteractionChannel(interaction);
-    const inTrackableThread = isTrackableTopupThread(resolvedChannel);
+    const rawInteractionThreadLike = isTrackableTopupThread(interaction.channel);
+    const resolvedThreadLike = isTrackableTopupThread(resolvedChannel);
+    const threadId = interaction.channelId;
 
     console.log(
-      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} threadResolved=${!!resolvedChannel} threadName=${resolvedChannel?.name || "unknown"} parentId=${resolvedChannel?.parentId || "none"} parentName=${resolvedChannel?.parent?.name || "none"}`
+      `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} rawThreadLike=${rawInteractionThreadLike} resolvedThreadLike=${resolvedThreadLike} threadResolved=${!!resolvedChannel} threadName=${resolvedChannel?.name || interaction.channel?.name || "unknown"} parentId=${resolvedChannel?.parentId || interaction.channel?.parentId || "none"} parentName=${resolvedChannel?.parent?.name || interaction.channel?.parent?.name || "none"}`
     );
 
     if (!managerAllowed) {
@@ -1103,16 +1132,34 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only managers can use this command.");
     }
 
-    if (!inTrackableThread) {
-      console.log("[TOTAL_DEBUG] denied reason=not_thread_or_not_resolved");
+    if (!rawInteractionThreadLike && !resolvedThreadLike) {
+      console.log(
+        `[TOTAL_DEBUG] denied reason=not_thread rawInteractionChannelType=${interaction.channel?.type ?? "none"} resolvedChannelType=${resolvedChannel?.type ?? "none"}`
+      );
       return interaction.editReply("❌ Use /total inside a thread/post.");
     }
 
     await loadTopupFromDisk();
 
-    const parentId = resolvedChannel.parentId;
-    const threadId = resolvedChannel.id;
-    const entries = topupData.channels?.[parentId]?.threads?.[threadId]?.entries || [];
+    let parentId = resolvedChannel?.parentId || interaction.channel?.parentId || null;
+    let entries = [];
+
+    if (parentId) {
+      entries = topupData.channels?.[parentId]?.threads?.[threadId]?.entries || [];
+    }
+
+    // Fallback: if parentId is missing/unresolved, locate thread by ID across all parents.
+    if (!entries.length) {
+      for (const [candidateParentId, parentData] of Object.entries(topupData.channels || {})) {
+        const candidateEntries = parentData?.threads?.[threadId]?.entries;
+        if (Array.isArray(candidateEntries)) {
+          parentId = candidateParentId;
+          entries = candidateEntries;
+          break;
+        }
+      }
+    }
+
     const matched = entries.filter(e => Array.isArray(e.amounts) ? e.amounts.length > 0 : Number(e.amountTotal) > 0);
     const sum = matched.reduce((total, entry) => {
       if (Array.isArray(entry.amounts)) {
@@ -1122,7 +1169,7 @@ client.on("interactionCreate", async interaction => {
     }, 0);
 
     console.log(
-      `[TOTAL_DEBUG] computed threadId=${threadId} entries=${entries.length} matchedEntries=${matched.length} sum=${sum.toFixed(2)}`
+      `[TOTAL_DEBUG] computed threadId=${threadId} parentId=${parentId || "none"} entries=${entries.length} matchedEntries=${matched.length} sum=${sum.toFixed(2)}`
     );
 
     return interaction.editReply({
@@ -1130,7 +1177,7 @@ client.on("interactionCreate", async interaction => {
         title: "💵 Thread Topup Total",
         color: 0x2ecc71,
         fields: [
-          { name: "🧵 Thread", value: resolvedChannel.name || threadId, inline: false },
+          { name: "🧵 Thread", value: resolvedChannel?.name || interaction.channel?.name || threadId, inline: false },
           { name: "📌 Counted Entries", value: String(matched.length), inline: true },
           { name: "🧮 Total", value: `$${sum.toFixed(2)}`, inline: true },
         ],
