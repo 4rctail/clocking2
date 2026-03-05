@@ -1106,11 +1106,20 @@ client.on("interactionCreate", async interaction => {
     });
     const entryText = interaction.options.getString("entry", true).trim();
 
+    const parts = entryText.split("|").map((part) => part.trim());
+    const amountMatch = parts[0]?.match(/\d+(?:\.\d+)?/);
+    const cvvMatch = parts[1]?.match(/\d+/);
+    const adspowerMatch = parts[3]?.match(/\d+/);
+
+    const topupAmount = amountMatch ? Number(amountMatch[0]) : 0;
+    const cvvNo = cvvMatch ? cvvMatch[0] : "N/A";
+    const adspowerNo = adspowerMatch ? adspowerMatch[0] : "N/A";
+
+    const amountTotal = Number.isFinite(topupAmount) ? topupAmount : 0;
+    const amounts = amountTotal > 0 ? [amountTotal] : [];
+
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
-
-      const amounts = extractTopupAmounts(entryText);
-      const amountTotal = amounts.reduce((sum, value) => sum + value, 0);
 
       const result = getOrCreateTopupThreadBucket(contextChannel, {
         channelId: topupContext.channelId,
@@ -1134,11 +1143,34 @@ client.on("interactionCreate", async interaction => {
       await persistTopup();
 
       console.log(
-        `[TOPUP_DEBUG] captured via=/topup channelName=${bucketContext.channelName} channelId=${bucketContext.channelId} threadName=${bucketContext.threadName} threadId=${bucketContext.threadId} user=${interaction.user.id} amounts=${amounts.join(",") || "none"} total=${amountTotal}`
+        `[TOPUP_DEBUG] captured via=/topup channelName=${bucketContext.channelName} channelId=${bucketContext.channelId} threadName=${bucketContext.threadName} threadId=${bucketContext.threadId} user=${interaction.user.id} amounts=${amounts.join(",") || "none"} total=${amountTotal} cvv=${cvvNo} adspower=${adspowerNo}`
       );
     });
 
-    return interaction.editReply(`✅ Topup recorded.${amounts.length ? ` Parsed total: $${amountTotal.toFixed(2)}` : " (No monetary value parsed)"}`);
+    return interaction.editReply({
+      embeds: [{
+        title: "✅ Topup Recorded",
+        color: 0x2ecc71,
+        fields: [
+          {
+            name: "Topup Amount",
+            value: `$${amountTotal.toFixed(2)}`,
+            inline: true,
+          },
+          {
+            name: "Adspower No.",
+            value: adspowerNo,
+            inline: true,
+          },
+          {
+            name: "CVV",
+            value: cvvNo,
+            inline: true,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    });
   }
 
   if (interaction.commandName === "total") {
@@ -1189,13 +1221,10 @@ client.on("interactionCreate", async interaction => {
       }, 0);
       matchedCount = matched.length;
 
-      // Reset topup tracking after reporting the current channel's total.
-      topupData = { channels: {} };
-      await persistTopup();
     });
 
     console.log(
-      `[TOTAL_DEBUG] computed channelId=${topupContext.channelId} channelName=${topupContext.channelName} matchedEntries=${matchedCount} sum=${sum.toFixed(2)} resetTopup=true`
+      `[TOTAL_DEBUG] computed channelId=${topupContext.channelId} channelName=${topupContext.channelName} matchedEntries=${matchedCount} sum=${sum.toFixed(2)} resetTopup=false`
     );
 
     return interaction.editReply({
