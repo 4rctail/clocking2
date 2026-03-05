@@ -1,3 +1,62 @@
 {
-  "channels": {}
+  "channels": {
+    "1478889778907844618": {
+      "channelId": "1478889778907844618",
+      "channelName": "unknown-channel",
+      "threads": {
+        "1478889778907844618": {
+          "threadId": "1478889778907844618",
+          "threadName": "unknown-channel",
+          "createdAt": "2026-03-05T01:13:16.273Z",
+          "lastMessageAt": "2026-03-05T01:26:09.914Z",
+          "entries": [
+            {
+              "messageId": "manual:1478923315828756630",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "12$",
+              "amounts": [
+                12
+              ],
+              "amountTotal": 12,
+              "createdAt": "2026-03-05T01:13:16.273Z"
+            },
+            {
+              "messageId": "manual:1478923396019519758",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "15$",
+              "amounts": [
+                15
+              ],
+              "amountTotal": 15,
+              "createdAt": "2026-03-05T01:13:35.502Z"
+            },
+            {
+              "messageId": "manual:1478923668959662202",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "20$ | 333 cvv | troy | 5244",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T01:14:40.333Z"
+            },
+            {
+              "messageId": "manual:1478926561796423782",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "12$",
+              "amounts": [
+                12
+              ],
+              "amountTotal": 12,
+              "createdAt": "2026-03-05T01:26:09.914Z"
+            }
+          ]
+        }
+      }
+    }
+  }
 }
