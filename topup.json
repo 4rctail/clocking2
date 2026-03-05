@@ -79,6 +79,42 @@
           ]
         }
       }
+    },
+    "1479150382105235526": {
+      "channelId": "1479150382105235526",
+      "channelName": "unknown-channel",
+      "threads": {
+        "1479150382105235526": {
+          "threadId": "1479150382105235526",
+          "threadName": "unknown-channel",
+          "createdAt": "2026-03-05T16:15:49.268Z",
+          "lastMessageAt": "2026-03-05T16:15:52.268Z",
+          "entries": [
+            {
+              "messageId": "manual:1479150450988027914",
+              "userId": "854713123851337758",
+              "username": "Rich",
+              "raw": "20",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:15:49.268Z"
+            },
+            {
+              "messageId": "manual:1479150462983733329",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "20 USD",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:15:52.268Z"
+            }
+          ]
+        }
+      }
     }
   }
 }
