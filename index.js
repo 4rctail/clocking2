@@ -719,7 +719,7 @@ async function persist() {
 // TIME HELPERS
 // =======================
 const nowISO = () => new Date().toISOString();
-const AUTO_CLOCK_OUT_LIMIT_MS = 8 * 3600000;
+const AUTO_CLOCK_OUT_LIMIT_MS = 12 * 3600000;
 const AUTO_CLOCK_OUT_INTERVAL_MS = 60000;
 
 const diffHours = (s, e) =>
@@ -756,7 +756,9 @@ async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
   }
 
   try {
-    const channel = await client.channels.fetch(TIME_TRACKER_CHANNEL_ID);
+    const channel =
+      client.channels.cache.get(TIME_TRACKER_CHANNEL_ID) ||
+      await client.channels.fetch(TIME_TRACKER_CHANNEL_ID);
     if (!channel || typeof channel.send !== "function") {
       console.warn("⚠ Auto clock-out embed skipped: target channel is not sendable.");
       return;
@@ -764,7 +766,7 @@ async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
 
     await channel.send({
       embeds: [{
-        title: "⏲️ Auto Clock-Out (8 Hours)",
+        title: "⏲️ Auto Clock-Out (12 Hours)",
         color: 0xe67e22,
         fields: [
           { name: "👤 User", value: name || userId, inline: true },
@@ -774,15 +776,44 @@ async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
           { name: "⏱ Duration", value: `${Math.round(hours * 100) / 100}h`, inline: true },
           {
             name: "ℹ️ Reason",
-            value: "Session reached the 8-hour limit and was automatically clocked out.",
+            value: "Session reached the 12-hour limit and was automatically clocked out.",
             inline: false,
           },
         ],
         timestamp: new Date().toISOString(),
       }],
     });
+
+    console.log(`✅ Auto clock-out embed sent for user=${userId}`);
   } catch (err) {
     console.error("Failed to send auto clock-out embed:", err);
+  }
+}
+
+async function sendAutoClockOutDM({ userId, start, end, hours }) {
+  if (!client.isReady()) return;
+
+  try {
+    const user = await client.users.fetch(userId);
+    if (!user) return;
+
+    await user.send({
+      embeds: [{
+        title: "⏲️ You were automatically clocked out",
+        color: 0xe67e22,
+        description: "You reached the 12-hour maximum session length and were clocked out automatically.",
+        fields: [
+          { name: "▶️ Started", value: formatDate(start), inline: false },
+          { name: "⏹ Ended (Auto)", value: formatDate(end), inline: false },
+          { name: "⏱ Duration", value: `${Math.round(hours * 100) / 100}h`, inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    });
+
+    console.log(`✅ Auto clock-out DM sent to user=${userId}`);
+  } catch (err) {
+    console.warn(`⚠ Failed to send auto clock-out DM to user=${userId}:`, err?.message || err);
   }
 }
 
@@ -818,18 +849,25 @@ async function autoClockOutReachedSessions() {
           start,
           end,
           hours,
-          source: "auto_8h",
+          source: "auto_12h",
         });
         record.active = null;
         hasChanges = true;
 
         console.log(
-          `⏲ AUTO_8H clock-out user=${userId} start=${start} end=${end}`
+          `⏲ AUTO_12H clock-out user=${userId} start=${start} end=${end}`
         );
 
         await sendAutoClockOutEmbed({
           userId,
           name: displayName,
+          start,
+          end,
+          hours,
+        });
+
+        await sendAutoClockOutDM({
+          userId,
           start,
           end,
           hours,
