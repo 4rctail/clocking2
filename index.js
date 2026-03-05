@@ -913,7 +913,15 @@ async function loadTopupFromGitHub() {
   const json = await res.json();
   const decoded = Buffer.from(json.content, "base64").toString("utf8");
 
-  topupData = ensureTopupShape(JSON.parse(decoded));
+  try {
+    topupData = ensureTopupShape(JSON.parse(decoded));
+  } catch (err) {
+    console.warn("⚠ Invalid topup.json on GitHub; resetting topup data:", err?.message || err);
+    topupData = { channels: {} };
+    await persistTopup();
+    return;
+  }
+
   await fs.writeFile(TOPUP_FILE, JSON.stringify(topupData, null, 2));
 
   console.log("✅ Loaded topup from GitHub");
