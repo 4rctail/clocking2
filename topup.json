@@ -88,7 +88,7 @@
           "threadId": "1479150382105235526",
           "threadName": "unknown-channel",
           "createdAt": "2026-03-05T16:15:49.268Z",
-          "lastMessageAt": "2026-03-05T16:18:59.495Z",
+          "lastMessageAt": "2026-03-05T16:20:42.781Z",
           "entries": [
             {
               "messageId": "manual:1479150450988027914",
@@ -144,6 +144,17 @@
               ],
               "amountTotal": 20,
               "createdAt": "2026-03-05T16:18:59.495Z"
+            },
+            {
+              "messageId": "manual:1479151681521324254",
+              "userId": "854713123851337758",
+              "username": "Rich",
+              "raw": "20$ | 333 cvv | troy | 5244",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:20:42.781Z"
             }
           ]
         }
