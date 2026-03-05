@@ -267,26 +267,31 @@ function normalizeKey(value, fallback) {
   return (value || fallback).toLowerCase().trim();
 }
 
-function getTopupContext(channel) {
+function getTopupContext(channel, fallback = {}) {
+  const fallbackChannelName = fallback.channelName || "unknown-channel";
+  const fallbackThreadName = fallback.threadName || fallbackChannelName || "unknown-thread";
   const isThread = !!channel && typeof channel.isThread === "function" && channel.isThread();
   const channelName = isThread
-    ? (channel.parent?.name || "unknown-channel")
-    : (channel?.name || "unknown-channel");
-  const threadName = channel?.name || "unknown-thread";
+    ? (channel.parent?.name || fallbackChannelName)
+    : (channel?.name || fallbackChannelName);
+  const threadName = channel?.name || fallbackThreadName;
+
+  const fallbackChannelId = fallback.channelId || `name:${normalizeKey(channelName, "unknown-channel")}`;
+  const fallbackThreadId = fallback.threadId || fallbackChannelId;
 
   return {
     channelId: isThread
-      ? (channel.parentId || `name:${normalizeKey(channelName, "unknown-channel")}`)
-      : (channel?.id || `name:${normalizeKey(channelName, "unknown-channel")}`),
+      ? (channel.parentId || fallbackChannelId)
+      : (channel?.id || fallbackChannelId),
     channelName,
-    threadId: channel?.id || `name:${normalizeKey(threadName, "unknown-thread")}`,
+    threadId: channel?.id || fallbackThreadId,
     threadName,
     isThread,
   };
 }
 
-function getOrCreateTopupThreadBucket(channel) {
-  const ctx = getTopupContext(channel);
+function getOrCreateTopupThreadBucket(channel, fallback = {}) {
+  const ctx = getTopupContext(channel, fallback);
 
   topupData = ensureTopupShape(topupData);
   const channels = topupData.channels;
@@ -908,7 +913,15 @@ async function loadTopupFromGitHub() {
   const json = await res.json();
   const decoded = Buffer.from(json.content, "base64").toString("utf8");
 
-  topupData = ensureTopupShape(JSON.parse(decoded));
+  try {
+    topupData = ensureTopupShape(JSON.parse(decoded));
+  } catch (err) {
+    console.warn("⚠ Invalid topup.json on GitHub; resetting topup data:", err?.message || err);
+    topupData = { channels: {} };
+    await persistTopup();
+    return;
+  }
+
   await fs.writeFile(TOPUP_FILE, JSON.stringify(topupData, null, 2));
 
   console.log("✅ Loaded topup from GitHub");
@@ -1087,7 +1100,10 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "topup") {
     const resolvedChannel = await resolveInteractionChannel(interaction);
     const contextChannel = resolvedChannel || interaction.channel;
-    const topupContext = getTopupContext(contextChannel);
+    const topupContext = getTopupContext(contextChannel, {
+      channelId: interaction.channelId,
+      threadId: interaction.channelId,
+    });
     const entryText = interaction.options.getString("entry", true).trim();
 
     await withTopupWriteLock(async () => {
@@ -1096,7 +1112,10 @@ client.on("interactionCreate", async interaction => {
       const amounts = extractTopupAmounts(entryText);
       const amountTotal = amounts.reduce((sum, value) => sum + value, 0);
 
-      const result = getOrCreateTopupThreadBucket(contextChannel);
+      const result = getOrCreateTopupThreadBucket(contextChannel, {
+        channelId: topupContext.channelId,
+        threadId: topupContext.threadId,
+      });
       const threadBucket = result.bucket;
       const bucketContext = result.ctx;
 
@@ -1126,7 +1145,10 @@ client.on("interactionCreate", async interaction => {
     const managerAllowed = hasManagerRoleById(interaction.user.id);
     const resolvedChannel = await resolveInteractionChannel(interaction);
     const contextChannel = resolvedChannel || interaction.channel;
-    const topupContext = getTopupContext(contextChannel);
+    const topupContext = getTopupContext(contextChannel, {
+      channelId: interaction.channelId,
+      threadId: interaction.channelId,
+    });
 
     console.log(
       `[TOTAL_DEBUG] command=/total user=${interaction.user.id} managerAllowed=${managerAllowed} channelId=${interaction.channelId} lookupChannelId=${topupContext.channelId} channelName=${topupContext.channelName}`
