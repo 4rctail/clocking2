@@ -1106,15 +1106,11 @@ client.on("interactionCreate", async interaction => {
     });
     const entryText = interaction.options.getString("entry", true).trim();
 
-    const parts = entryText.split("|").map((part) => part.trim());
+    const parts = entryText.split("|").map((part) => part.trim()).filter(Boolean);
     const amountMatch = parts[0]?.match(/\d+(?:\.\d+)?/);
-    const cvvMatch = parts[1]?.match(/\d+/);
-    const adspowerMatch = parts[3]?.match(/\d+/);
+    const extraParts = parts.slice(1);
 
     const topupAmount = amountMatch ? Number(amountMatch[0]) : 0;
-    const cvvNo = cvvMatch ? cvvMatch[0] : "N/A";
-    const adspowerNo = adspowerMatch ? adspowerMatch[0] : "N/A";
-
     const amountTotal = Number.isFinite(topupAmount) ? topupAmount : 0;
     const amounts = amountTotal > 0 ? [amountTotal] : [];
 
@@ -1143,7 +1139,7 @@ client.on("interactionCreate", async interaction => {
       await persistTopup();
 
       console.log(
-        `[TOPUP_DEBUG] captured via=/topup channelName=${bucketContext.channelName} channelId=${bucketContext.channelId} threadName=${bucketContext.threadName} threadId=${bucketContext.threadId} user=${interaction.user.id} amounts=${amounts.join(",") || "none"} total=${amountTotal} cvv=${cvvNo} adspower=${adspowerNo}`
+        `[TOPUP_DEBUG] captured via=/topup channelName=${bucketContext.channelName} channelId=${bucketContext.channelId} threadName=${bucketContext.threadName} threadId=${bucketContext.threadId} user=${interaction.user.id} amounts=${amounts.join(",") || "none"} total=${amountTotal} extras=${extraParts.join(" | ") || "none"}`
       );
     });
 
@@ -1158,14 +1154,9 @@ client.on("interactionCreate", async interaction => {
             inline: true,
           },
           {
-            name: "Adspower No.",
-            value: adspowerNo,
-            inline: true,
-          },
-          {
-            name: "CVV",
-            value: cvvNo,
-            inline: true,
+            name: "Details",
+            value: extraParts.length ? extraParts.join("\n") : "N/A",
+            inline: false,
           },
         ],
         timestamp: new Date().toISOString(),
