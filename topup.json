@@ -1,3 +1,29 @@
 {
-  "channels": {}
+  "channels": {
+    "name:unknown-channel": {
+      "channelId": "name:unknown-channel",
+      "channelName": "unknown-channel",
+      "threads": {
+        "name:unknown-thread": {
+          "threadId": "name:unknown-thread",
+          "threadName": "unknown-thread",
+          "createdAt": "2026-03-05T00:13:46.731Z",
+          "lastMessageAt": "2026-03-05T00:13:46.731Z",
+          "entries": [
+            {
+              "messageId": "manual:1478908344772071506",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "20$",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T00:13:46.731Z"
+            }
+          ]
+        }
+      }
+    }
+  }
 }
