@@ -1106,11 +1106,14 @@ client.on("interactionCreate", async interaction => {
     });
     const entryText = interaction.options.getString("entry", true).trim();
 
+    let amountTotal = 0;
+    let amounts = [];
+
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
 
-      const amounts = extractTopupAmounts(entryText);
-      const amountTotal = amounts.reduce((sum, value) => sum + value, 0);
+      amounts = extractTopupAmounts(entryText);
+      amountTotal = amounts.reduce((sum, value) => sum + value, 0);
 
       const result = getOrCreateTopupThreadBucket(contextChannel, {
         channelId: topupContext.channelId,
@@ -1138,7 +1141,30 @@ client.on("interactionCreate", async interaction => {
       );
     });
 
-    return interaction.editReply(`✅ Topup recorded.${amounts.length ? ` Parsed total: $${amountTotal.toFixed(2)}` : " (No monetary value parsed)"}`);
+    return interaction.editReply({
+      embeds: [{
+        title: "✅ Topup Recorded",
+        color: 0x2ecc71,
+        fields: [
+          {
+            name: "👤 Submitted By",
+            value: `<@${interaction.user.id}>`,
+            inline: true,
+          },
+          {
+            name: "🧾 Parsed Values",
+            value: amounts.length ? amounts.map((value) => `$${value.toFixed(2)}`).join(", ") : "None detected",
+            inline: false,
+          },
+          {
+            name: "🧮 Parsed Total",
+            value: amounts.length ? `$${amountTotal.toFixed(2)}` : "$0.00",
+            inline: true,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+      }],
+    });
   }
 
   if (interaction.commandName === "total") {
@@ -1189,13 +1215,10 @@ client.on("interactionCreate", async interaction => {
       }, 0);
       matchedCount = matched.length;
 
-      // Reset topup tracking after reporting the current channel's total.
-      topupData = { channels: {} };
-      await persistTopup();
     });
 
     console.log(
-      `[TOTAL_DEBUG] computed channelId=${topupContext.channelId} channelName=${topupContext.channelName} matchedEntries=${matchedCount} sum=${sum.toFixed(2)} resetTopup=true`
+      `[TOTAL_DEBUG] computed channelId=${topupContext.channelId} channelName=${topupContext.channelName} matchedEntries=${matchedCount} sum=${sum.toFixed(2)} resetTopup=false`
     );
 
     return interaction.editReply({
