@@ -66,3 +66,13 @@ The intended update flow for the app is:
 4. App swaps/restarts using a helper process (Windows cannot overwrite a running exe reliably).
 
 This repository currently includes release artifact generation and publishing; if you want, the next implementation step is adding an in-app updater module that consumes `latest.json`.
+
+### Troubleshooting
+
+If you see:
+
+```
+Error! No available node version satisfies 'node20'
+```
+
+that means `pkg` does not have a `node20` runtime for your installed version. This repository is configured to target `node18-win-x64` so local release builds work with `pkg@5.8.1`.
