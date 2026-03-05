@@ -1106,14 +1106,16 @@ client.on("interactionCreate", async interaction => {
     });
     const entryText = interaction.options.getString("entry", true).trim();
 
-    let amountTotal = 0;
-    let amounts = [];
+    const parts = entryText.split("|").map((part) => part.trim()).filter(Boolean);
+    const amountMatch = parts[0]?.match(/\d+(?:\.\d+)?/);
+    const extraParts = parts.slice(1);
+
+    const topupAmount = amountMatch ? Number(amountMatch[0]) : 0;
+    const amountTotal = Number.isFinite(topupAmount) ? topupAmount : 0;
+    const amounts = amountTotal > 0 ? [amountTotal] : [];
 
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
-
-      amounts = extractTopupAmounts(entryText);
-      amountTotal = amounts.reduce((sum, value) => sum + value, 0);
 
       const result = getOrCreateTopupThreadBucket(contextChannel, {
         channelId: topupContext.channelId,
@@ -1137,7 +1139,7 @@ client.on("interactionCreate", async interaction => {
       await persistTopup();
 
       console.log(
-        `[TOPUP_DEBUG] captured via=/topup channelName=${bucketContext.channelName} channelId=${bucketContext.channelId} threadName=${bucketContext.threadName} threadId=${bucketContext.threadId} user=${interaction.user.id} amounts=${amounts.join(",") || "none"} total=${amountTotal}`
+        `[TOPUP_DEBUG] captured via=/topup channelName=${bucketContext.channelName} channelId=${bucketContext.channelId} threadName=${bucketContext.threadName} threadId=${bucketContext.threadId} user=${interaction.user.id} amounts=${amounts.join(",") || "none"} total=${amountTotal} extras=${extraParts.join(" | ") || "none"}`
       );
     });
 
@@ -1147,19 +1149,14 @@ client.on("interactionCreate", async interaction => {
         color: 0x2ecc71,
         fields: [
           {
-            name: "👤 Submitted By",
-            value: `<@${interaction.user.id}>`,
+            name: "Topup Amount",
+            value: `$${amountTotal.toFixed(2)}`,
             inline: true,
           },
           {
-            name: "🧾 Parsed Values",
-            value: amounts.length ? amounts.map((value) => `$${value.toFixed(2)}`).join(", ") : "None detected",
+            name: "Details",
+            value: extraParts.length ? extraParts.join("\n") : "N/A",
             inline: false,
-          },
-          {
-            name: "🧮 Parsed Total",
-            value: amounts.length ? `$${amountTotal.toFixed(2)}` : "$0.00",
-            inline: true,
           },
         ],
         timestamp: new Date().toISOString(),
