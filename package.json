@@ -8,5 +8,15 @@
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
     "dotenv": "^16.4.5"
+  },
+  "name": "clocking-bot",
+  "version": "1.0.0",
+  "scripts": {
+    "build:win": "pkg index.js --targets node20-win-x64 --output dist/clocking-bot.exe",
+    "checksum:win": "node scripts/generate-checksum.js dist/clocking-bot.exe release/latest.json",
+    "release:local": "npm run build:win && npm run checksum:win"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
   }
 }
