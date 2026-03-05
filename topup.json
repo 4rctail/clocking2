@@ -1,38 +1,3 @@
 {
-  "channels": {
-    "1478889778907844618": {
-      "channelId": "1478889778907844618",
-      "channelName": "unknown-channel",
-      "threads": {
-        "1478889778907844618": {
-          "threadId": "1478889778907844618",
-          "threadName": "unknown-channel",
-          "createdAt": "2026-03-05T01:02:59.299Z",
-          "lastMessageAt": "2026-03-05T01:03:13.231Z",
-          "entries": [
-            {
-              "messageId": "manual:1478920728681254942",
-              "userId": "769554444534153238",
-              "username": "4rc",
-              "raw": "12",
-              "amounts": [],
-              "amountTotal": 0,
-              "createdAt": "2026-03-05T01:02:59.299Z"
-            },
-            {
-              "messageId": "manual:1478920787363758220",
-              "userId": "769554444534153238",
-              "username": "4rc",
-              "raw": "40$",
-              "amounts": [
-                40
-              ],
-              "amountTotal": 40,
-              "createdAt": "2026-03-05T01:03:13.231Z"
-            }
-          ]
-        }
-      }
-    }
-  }
+  "channels": {}
 }
