@@ -18,5 +18,15 @@
   },
   "devDependencies": {
     "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "scripts": [
+      "index.js",
+      "keepAlive.js",
+      "commands/**/*.js"
+    ],
+    "assets": [
+      "*.json"
+    ]
   }
 }

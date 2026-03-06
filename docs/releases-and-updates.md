@@ -76,3 +76,20 @@ Error! No available node version satisfies 'node20'
 ```
 
 that means `pkg` does not have a `node20` runtime for your installed version. This repository is configured to target `node18-win-x64` so local release builds work with `pkg@5.8.1`.
+
+
+If you see:
+
+```
+Error: Cannot find module 'C:\snapshot\clocking\index.js'
+```
+
+rebuild after pulling the latest changes in this repo. The project now includes explicit `pkg` bundling config in `package.json` so `index.js`, command files, and JSON assets are included in the executable.
+
+Then run:
+
+```bash
+npm install
+npm run build:win
+npm run checksum:win
+```
