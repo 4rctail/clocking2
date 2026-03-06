@@ -105,3 +105,17 @@ npm run checksum:win
 ```
 
 This project now builds from `pkg .` with `"bin": "index.js"` in `package.json`, which ensures the executable entrypoint is bundled correctly.
+
+
+If you see:
+
+```
+Error! --no-bytecode and no source breaks final executable
+```
+
+remove `--no-bytecode` from the build command and run:
+
+```bash
+npm run build:win
+npm run checksum:win
+```
