@@ -104,7 +104,7 @@ npm run build:win
 npm run checksum:win
 ```
 
-This project now builds from `pkg .` with `"bin": "index.js"` in `package.json`, which ensures the executable entrypoint is bundled correctly.
+This project now builds from `pkg package.json` with `"main": "index.js"` and `"bin": "index.js"` in `package.json`, which ensures the executable entrypoint is bundled correctly.
 
 
 If you see:
@@ -119,3 +119,10 @@ remove `--no-bytecode` from the build command and run:
 npm run build:win
 npm run checksum:win
 ```
+
+
+If you still see `Cannot find module 'C:\snapshot\clocking\index.js'` after rebuild:
+
+1. Confirm `package.json` has both `"main": "index.js"` and `"bin": "index.js"`.
+2. Confirm build command is `pkg package.json --targets node18-win-x64 --output dist/clocking-bot.exe`.
+3. Delete old EXE copies outside the repo and run the newly generated one in `dist/`.
