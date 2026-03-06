@@ -21,12 +21,17 @@
   },
   "pkg": {
     "scripts": [
-      "**/*.js"
+      "pkg-entry.cjs",
+      "index.js",
+      "keepAlive.js",
+      "voiceGuard.js",
+      "deploy-commands.js",
+      "commands/**/*.js"
     ],
     "assets": [
       "*.json"
     ]
   },
-  "bin": "index.js",
+  "bin": "pkg-entry.cjs",
   "main": "index.js"
 }
