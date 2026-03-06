@@ -93,3 +93,15 @@ npm install
 npm run build:win
 npm run checksum:win
 ```
+
+If it still fails, clear stale build/cache artifacts and rebuild:
+
+```powershell
+Remove-Item -Recurse -Force .\dist, .\release -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$env:USERPROFILE\.pkg-cache" -ErrorAction SilentlyContinue
+npm install
+npm run build:win
+npm run checksum:win
+```
+
+This project now builds from `pkg .` with `"bin": "index.js"` in `package.json`, which ensures the executable entrypoint is bundled correctly.
