@@ -79,6 +79,86 @@
           ]
         }
       }
+    },
+    "1479150382105235526": {
+      "channelId": "1479150382105235526",
+      "channelName": "unknown-channel",
+      "threads": {
+        "1479150382105235526": {
+          "threadId": "1479150382105235526",
+          "threadName": "unknown-channel",
+          "createdAt": "2026-03-05T16:15:49.268Z",
+          "lastMessageAt": "2026-03-05T16:20:42.781Z",
+          "entries": [
+            {
+              "messageId": "manual:1479150450988027914",
+              "userId": "854713123851337758",
+              "username": "Rich",
+              "raw": "20",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:15:49.268Z"
+            },
+            {
+              "messageId": "manual:1479150462983733329",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "20 USD",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:15:52.268Z"
+            },
+            {
+              "messageId": "manual:1479150603342184518",
+              "userId": "854713123851337758",
+              "username": "Rich",
+              "raw": "20",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:16:25.616Z"
+            },
+            {
+              "messageId": "manual:1479150859857297582",
+              "userId": "769554444534153238",
+              "username": "4rc",
+              "raw": "20$ | 333 cvv | troy | 5244",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:17:26.810Z"
+            },
+            {
+              "messageId": "manual:1479151248082079764",
+              "userId": "854713123851337758",
+              "username": "Rich",
+              "raw": "20 | troy | 333 cvv",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:18:59.495Z"
+            },
+            {
+              "messageId": "manual:1479151681521324254",
+              "userId": "854713123851337758",
+              "username": "Rich",
+              "raw": "20$ | 333 cvv | troy | 5244",
+              "amounts": [
+                20
+              ],
+              "amountTotal": 20,
+              "createdAt": "2026-03-05T16:20:42.781Z"
+            }
+          ]
+        }
+      }
     }
   }
 }
