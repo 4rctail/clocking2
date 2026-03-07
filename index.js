@@ -1223,13 +1223,15 @@ client.on("interactionCreate", async interaction => {
     });
     const entryText = interaction.options.getString("entry", true).trim();
 
-    const parts = entryText.split("|").map((part) => part.trim()).filter(Boolean);
-    const amountMatch = parts[0]?.match(/\d+(?:\.\d+)?/);
-    const extraParts = parts.slice(1);
+    const parts = entryText.split("|");
+    const primaryPart = (parts.shift() || "").trim();
+    const extraParts = parts.map((part) => part.trim()).filter(Boolean);
 
+    const amountMatch = primaryPart.match(/\d+(?:\.\d+)?/);
     const topupAmount = amountMatch ? Number(amountMatch[0]) : 0;
     const amountTotal = Number.isFinite(topupAmount) ? topupAmount : 0;
     const amounts = amountTotal > 0 ? [amountTotal] : [];
+    const detailsText = extraParts.length ? extraParts.join(" | ") : "N/A";
 
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
@@ -1272,7 +1274,7 @@ client.on("interactionCreate", async interaction => {
           },
           {
             name: "Details",
-            value: extraParts.length ? extraParts.join("\n") : "N/A",
+            value: detailsText,
             inline: false,
           },
         ],
