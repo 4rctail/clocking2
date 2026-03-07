@@ -12,7 +12,7 @@
   "name": "clocking-bot",
   "version": "1.0.0",
   "scripts": {
-    "build:win": "pkg index.js --targets node18-win-x64 --output dist/clocking-bot.exe --public --no-bytecode",
+    "build:win": "pkg index.js --targets node18-win-x64 --output dist/clocking-bot.exe --public",
     "checksum:win": "node scripts/generate-checksum.js dist/clocking-bot.exe release/latest.json",
     "release:local": "npm run build:win && npm run checksum:win"
   },
