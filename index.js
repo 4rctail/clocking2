@@ -1,7 +1,8 @@
-import { ChannelType, Client, GatewayIntentBits } from "discord.js";
+import { ChannelType, Client, GatewayIntentBits, REST, Routes } from "discord.js";
 import fs from "fs/promises";
 import fetch from "node-fetch";
 import { startKeepAlive } from "./keepAlive.js";
+import { slashCommands } from "./slash-commands.js";
 
 // =======================
 // CONFIG
@@ -9,7 +10,7 @@ import { startKeepAlive } from "./keepAlive.js";
 const PH_TZ = "Asia/Manila";
 const DATA_FILE = "./timesheet.json";
 const TOPUP_FILE = "./topup.json";
-const TIME_TRACKER_CHANNEL_ID = process.env.TIME_TRACKER_CHANNEL_ID || "1460301758940188733";
+const TIME_TRACKER_CHANNEL_NAME = "time-tracker";
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -53,6 +54,53 @@ client.on("shardReconnecting", (shardId) => {
 
 client.on("shardResume", (shardId, replayedEvents) => {
   console.log(`Discord shard ${shardId} resumed (replayed ${replayedEvents} events).`);
+});
+
+const slashCommandRest = new REST({ version: "10" });
+let slashCommandsSynced = false;
+
+async function syncSlashCommandsForGuild(guildId) {
+  try {
+    if (!process.env.DISCORD_TOKEN) {
+      console.warn("⚠ Skipping slash command sync: DISCORD_TOKEN is missing.");
+      return;
+    }
+
+    if (!client.user?.id) {
+      console.warn("⚠ Skipping slash command sync: bot user is not available yet.");
+      return;
+    }
+
+    slashCommandRest.setToken(process.env.DISCORD_TOKEN);
+
+    await slashCommandRest.put(
+      Routes.applicationGuildCommands(client.user.id, guildId),
+      { body: slashCommands }
+    );
+
+    console.log(`✅ Synced ${slashCommands.length} slash commands for guild ${guildId}`);
+  } catch (err) {
+    console.error(`❌ Failed to sync slash commands for guild ${guildId}:`, err);
+  }
+}
+
+client.on("ready", async () => {
+  if (slashCommandsSynced) return;
+  slashCommandsSynced = true;
+
+  const guildIds = [...client.guilds.cache.keys()];
+  if (!guildIds.length) {
+    console.warn("⚠ Bot is not in any guild yet, skipping initial slash command sync.");
+    return;
+  }
+
+  for (const guildId of guildIds) {
+    await syncSlashCommandsForGuild(guildId);
+  }
+});
+
+client.on("guildCreate", async (guild) => {
+  await syncSlashCommandsForGuild(guild.id);
 });
 
 const PUBLIC_COMMANDS = new Set([
@@ -354,6 +402,37 @@ async function readFileFromGitHub(path) {
   return JSON.parse(decoded);
 }
 
+
+
+function isTimeTrackerChannel(channel) {
+  if (!channel) return false;
+
+  if (typeof channel.isThread === "function" && channel.isThread()) {
+    return channel.parent?.name === TIME_TRACKER_CHANNEL_NAME;
+  }
+
+  return channel.name === TIME_TRACKER_CHANNEL_NAME;
+}
+
+async function findTimeTrackerChannel() {
+  const fromCache = client.channels.cache.find(
+    (ch) => isTimeTrackerChannel(ch) && typeof ch.send === "function"
+  );
+  if (fromCache) return fromCache;
+
+  for (const guild of client.guilds.cache.values()) {
+    const channels = await guild.channels.fetch().catch(() => null);
+    if (!channels) continue;
+
+    const match = channels.find(
+      (ch) => isTimeTrackerChannel(ch) && typeof ch.send === "function"
+    );
+
+    if (match) return match;
+  }
+
+  return null;
+}
 
 async function safeGetMember(interaction, userId) {
   if (!interaction.inGuild()) return null;
@@ -756,9 +835,7 @@ async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
   }
 
   try {
-    const channel =
-      client.channels.cache.get(TIME_TRACKER_CHANNEL_ID) ||
-      await client.channels.fetch(TIME_TRACKER_CHANNEL_ID);
+    const channel = await findTimeTrackerChannel();
     if (!channel || typeof channel.send !== "function") {
       console.warn("⚠ Auto clock-out embed skipped: target channel is not sendable.");
       return;
@@ -1112,7 +1189,9 @@ client.on("interactionCreate", async interaction => {
     "totalhr",
   ]);
 
-  if (trackerCommands.has(interaction.commandName) && interaction.channelId !== TIME_TRACKER_CHANNEL_ID) {
+  const interactionChannel = await resolveInteractionChannel(interaction);
+
+  if (trackerCommands.has(interaction.commandName) && !isTimeTrackerChannel(interactionChannel)) {
     return interaction.reply({
       content: "❌ This command can only be used in **#time-tracker**.",
       ephemeral: true,
@@ -1144,13 +1223,15 @@ client.on("interactionCreate", async interaction => {
     });
     const entryText = interaction.options.getString("entry", true).trim();
 
-    const parts = entryText.split("|").map((part) => part.trim()).filter(Boolean);
-    const amountMatch = parts[0]?.match(/\d+(?:\.\d+)?/);
-    const extraParts = parts.slice(1);
+    const parts = entryText.split("|");
+    const primaryPart = (parts.shift() || "").trim();
+    const extraParts = parts.map((part) => part.trim()).filter(Boolean);
 
+    const amountMatch = primaryPart.match(/\d+(?:\.\d+)?/);
     const topupAmount = amountMatch ? Number(amountMatch[0]) : 0;
     const amountTotal = Number.isFinite(topupAmount) ? topupAmount : 0;
     const amounts = amountTotal > 0 ? [amountTotal] : [];
+    const detailsText = extraParts.length ? extraParts.join(" | ") : "N/A";
 
     await withTopupWriteLock(async () => {
       await loadTopupFromDisk();
@@ -1193,7 +1274,7 @@ client.on("interactionCreate", async interaction => {
           },
           {
             name: "Details",
-            value: extraParts.length ? extraParts.join("\n") : "N/A",
+            value: detailsText,
             inline: false,
           },
         ],
