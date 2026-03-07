@@ -10,7 +10,7 @@ import { slashCommands } from "./slash-commands.js";
 const PH_TZ = "Asia/Manila";
 const DATA_FILE = "./timesheet.json";
 const TOPUP_FILE = "./topup.json";
-const TIME_TRACKER_CHANNEL_ID = process.env.TIME_TRACKER_CHANNEL_ID || "1460301758940188733";
+const TIME_TRACKER_CHANNEL_NAME = "time-tracker";
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -402,6 +402,37 @@ async function readFileFromGitHub(path) {
   return JSON.parse(decoded);
 }
 
+
+
+function isTimeTrackerChannel(channel) {
+  if (!channel) return false;
+
+  if (typeof channel.isThread === "function" && channel.isThread()) {
+    return channel.parent?.name === TIME_TRACKER_CHANNEL_NAME;
+  }
+
+  return channel.name === TIME_TRACKER_CHANNEL_NAME;
+}
+
+async function findTimeTrackerChannel() {
+  const fromCache = client.channels.cache.find(
+    (ch) => isTimeTrackerChannel(ch) && typeof ch.send === "function"
+  );
+  if (fromCache) return fromCache;
+
+  for (const guild of client.guilds.cache.values()) {
+    const channels = await guild.channels.fetch().catch(() => null);
+    if (!channels) continue;
+
+    const match = channels.find(
+      (ch) => isTimeTrackerChannel(ch) && typeof ch.send === "function"
+    );
+
+    if (match) return match;
+  }
+
+  return null;
+}
 
 async function safeGetMember(interaction, userId) {
   if (!interaction.inGuild()) return null;
@@ -804,9 +835,7 @@ async function sendAutoClockOutEmbed({ userId, name, start, end, hours }) {
   }
 
   try {
-    const channel =
-      client.channels.cache.get(TIME_TRACKER_CHANNEL_ID) ||
-      await client.channels.fetch(TIME_TRACKER_CHANNEL_ID);
+    const channel = await findTimeTrackerChannel();
     if (!channel || typeof channel.send !== "function") {
       console.warn("⚠ Auto clock-out embed skipped: target channel is not sendable.");
       return;
@@ -1160,7 +1189,9 @@ client.on("interactionCreate", async interaction => {
     "totalhr",
   ]);
 
-  if (trackerCommands.has(interaction.commandName) && interaction.channelId !== TIME_TRACKER_CHANNEL_ID) {
+  const interactionChannel = await resolveInteractionChannel(interaction);
+
+  if (trackerCommands.has(interaction.commandName) && !isTimeTrackerChannel(interactionChannel)) {
     return interaction.reply({
       content: "❌ This command can only be used in **#time-tracker**.",
       ephemeral: true,
