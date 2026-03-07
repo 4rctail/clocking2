@@ -1,7 +1,8 @@
-import { ChannelType, Client, GatewayIntentBits } from "discord.js";
+import { ChannelType, Client, GatewayIntentBits, REST, Routes } from "discord.js";
 import fs from "fs/promises";
 import fetch from "node-fetch";
 import { startKeepAlive } from "./keepAlive.js";
+import { slashCommands } from "./slash-commands.js";
 
 // =======================
 // CONFIG
@@ -53,6 +54,53 @@ client.on("shardReconnecting", (shardId) => {
 
 client.on("shardResume", (shardId, replayedEvents) => {
   console.log(`Discord shard ${shardId} resumed (replayed ${replayedEvents} events).`);
+});
+
+const slashCommandRest = new REST({ version: "10" });
+let slashCommandsSynced = false;
+
+async function syncSlashCommandsForGuild(guildId) {
+  try {
+    if (!process.env.DISCORD_TOKEN) {
+      console.warn("⚠ Skipping slash command sync: DISCORD_TOKEN is missing.");
+      return;
+    }
+
+    if (!client.user?.id) {
+      console.warn("⚠ Skipping slash command sync: bot user is not available yet.");
+      return;
+    }
+
+    slashCommandRest.setToken(process.env.DISCORD_TOKEN);
+
+    await slashCommandRest.put(
+      Routes.applicationGuildCommands(client.user.id, guildId),
+      { body: slashCommands }
+    );
+
+    console.log(`✅ Synced ${slashCommands.length} slash commands for guild ${guildId}`);
+  } catch (err) {
+    console.error(`❌ Failed to sync slash commands for guild ${guildId}:`, err);
+  }
+}
+
+client.on("ready", async () => {
+  if (slashCommandsSynced) return;
+  slashCommandsSynced = true;
+
+  const guildIds = [...client.guilds.cache.keys()];
+  if (!guildIds.length) {
+    console.warn("⚠ Bot is not in any guild yet, skipping initial slash command sync.");
+    return;
+  }
+
+  for (const guildId of guildIds) {
+    await syncSlashCommandsForGuild(guildId);
+  }
+});
+
+client.on("guildCreate", async (guild) => {
+  await syncSlashCommandsForGuild(guild.id);
 });
 
 const PUBLIC_COMMANDS = new Set([
