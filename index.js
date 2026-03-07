@@ -11,6 +11,7 @@ const PH_TZ = "Asia/Manila";
 const DATA_FILE = "./timesheet.json";
 const TOPUP_FILE = "./topup.json";
 const TIME_TRACKER_CHANNEL_NAME = "time-tracker";
+const TIME_TRACKER_CHANNEL_ID_FALLBACK = "1460301758940188733";
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -325,12 +326,18 @@ function getTopupContext(channel, fallback = {}) {
   const threadName = channel?.name || fallbackThreadName;
 
   const fallbackChannelId = fallback.channelId || `name:${normalizeKey(channelName, "unknown-channel")}`;
+  const resolvedChannelId = isThread
+    ? (channel.parentId || fallbackChannelId)
+    : (channel?.id || fallbackChannelId);
+  const shouldForceTimeTrackerFallbackId =
+    normalizeKey(channelName, "") !== TIME_TRACKER_CHANNEL_NAME;
+  const channelId = shouldForceTimeTrackerFallbackId
+    ? TIME_TRACKER_CHANNEL_ID_FALLBACK
+    : resolvedChannelId;
   const fallbackThreadId = fallback.threadId || fallbackChannelId;
 
   return {
-    channelId: isThread
-      ? (channel.parentId || fallbackChannelId)
-      : (channel?.id || fallbackChannelId),
+    channelId,
     channelName,
     threadId: channel?.id || fallbackThreadId,
     threadName,
@@ -408,10 +415,16 @@ function isTimeTrackerChannel(channel) {
   if (!channel) return false;
 
   if (typeof channel.isThread === "function" && channel.isThread()) {
-    return channel.parent?.name === TIME_TRACKER_CHANNEL_NAME;
+    return (
+      channel.parent?.name === TIME_TRACKER_CHANNEL_NAME ||
+      channel.parentId === TIME_TRACKER_CHANNEL_ID_FALLBACK
+    );
   }
 
-  return channel.name === TIME_TRACKER_CHANNEL_NAME;
+  return (
+    channel.name === TIME_TRACKER_CHANNEL_NAME ||
+    channel.id === TIME_TRACKER_CHANNEL_ID_FALLBACK
+  );
 }
 
 async function findTimeTrackerChannel() {
