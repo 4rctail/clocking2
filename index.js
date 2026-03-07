@@ -411,20 +411,32 @@ async function readFileFromGitHub(path) {
 
 
 
+function isFallbackTimeTrackerId(channelId) {
+  return String(channelId || "") === TIME_TRACKER_CHANNEL_ID_FALLBACK;
+}
+
 function isTimeTrackerChannel(channel) {
   if (!channel) return false;
 
   if (typeof channel.isThread === "function" && channel.isThread()) {
     return (
       channel.parent?.name === TIME_TRACKER_CHANNEL_NAME ||
-      channel.parentId === TIME_TRACKER_CHANNEL_ID_FALLBACK
+      isFallbackTimeTrackerId(channel.parentId)
     );
   }
 
   return (
     channel.name === TIME_TRACKER_CHANNEL_NAME ||
-    channel.id === TIME_TRACKER_CHANNEL_ID_FALLBACK
+    isFallbackTimeTrackerId(channel.id)
   );
+}
+
+function isTimeTrackerInteractionContext(interaction, resolvedChannel) {
+  if (isTimeTrackerChannel(resolvedChannel)) return true;
+  if (isFallbackTimeTrackerId(interaction?.channelId)) return true;
+  if (isFallbackTimeTrackerId(interaction?.channel?.parentId)) return true;
+  if (isFallbackTimeTrackerId(resolvedChannel?.parentId)) return true;
+  return false;
 }
 
 async function findTimeTrackerChannel() {
@@ -1204,7 +1216,10 @@ client.on("interactionCreate", async interaction => {
 
   const interactionChannel = await resolveInteractionChannel(interaction);
 
-  if (trackerCommands.has(interaction.commandName) && !isTimeTrackerChannel(interactionChannel)) {
+  if (
+    trackerCommands.has(interaction.commandName) &&
+    !isTimeTrackerInteractionContext(interaction, interactionChannel)
+  ) {
     return interaction.reply({
       content: "❌ This command can only be used in **#time-tracker**.",
       ephemeral: true,
