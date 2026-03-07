@@ -168,7 +168,7 @@
           "threadId": "1479945687142633657",
           "threadName": "time-tracker",
           "createdAt": "2026-03-07T22:42:05.657Z",
-          "lastMessageAt": "2026-03-07T22:42:05.657Z",
+          "lastMessageAt": "2026-03-07T22:54:53.467Z",
           "entries": [
             {
               "messageId": "manual:1479972519669665833",
@@ -180,6 +180,17 @@
               ],
               "amountTotal": 123,
               "createdAt": "2026-03-07T22:42:05.657Z"
+            },
+            {
+              "messageId": "manual:1479975740161134676",
+              "userId": "769554444534153238",
+              "username": "asd",
+              "raw": "22$ | 444cfg | troy | 1234",
+              "amounts": [
+                22
+              ],
+              "amountTotal": 22,
+              "createdAt": "2026-03-07T22:54:53.470Z"
             }
           ]
         }
