@@ -1144,25 +1144,29 @@ async function sweepInactiveFreecashReports() {
 
     for (const activeUser of activeUsers) {
       const sessionStartMs = new Date(activeUser.activeStart).getTime();
-      const latestMessage = await getLatestForumMessageForUser(
-        forumChannel,
-        activeUser.userId,
-        Number.isFinite(sessionStartMs) ? sessionStartMs : 0
-      );
-
-      if (!latestMessage) {
-        console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
+      if (!Number.isFinite(sessionStartMs)) {
+        console.warn(
+          `[REPORT_DEBUG] user=${activeUser.userId} action=skip_invalid_active_start activeStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
 
-      const ageMinutes = (Date.now() - latestMessage.createdTimestamp) / 60_000;
+      const latestMessage = await getLatestForumMessageForUser(
+        forumChannel,
+        activeUser.userId,
+        sessionStartMs
+      );
+
+      const referenceTimestampMs = latestMessage?.createdTimestamp || sessionStartMs;
+      const latestMessageId = latestMessage?.id || `clockin:${sessionStartMs}`;
+      const targetChannel = latestMessage?.channel || forumChannel;
+      const threadIdForLog = latestMessage?.channelId || "none";
+      const ageMinutes = (Date.now() - referenceTimestampMs) / 60_000;
       const state = reportReminderState.get(activeUser.userId);
       const overLimit = ageMinutes >= REPORT_INACTIVITY_THRESHOLD_MINUTES;
 
       console.log(
-        `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=${latestMessage.id} threadId=${latestMessage.channelId} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
+        `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=${latestMessageId} threadId=${threadIdForLog} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit} reference=${latestMessage ? "latest_message" : "clockin_time"}`
       );
 
       if (!overLimit) {
@@ -1171,7 +1175,7 @@ async function sweepInactiveFreecashReports() {
       }
 
       const now = Date.now();
-      const sameLatestMessage = state?.lastMessageId === latestMessage.id;
+      const sameLatestMessage = state?.lastMessageId === latestMessageId;
       const shouldRepeatReminder =
         sameLatestMessage &&
         state?.remindedAt &&
@@ -1182,16 +1186,18 @@ async function sweepInactiveFreecashReports() {
         continue;
       }
 
-      await latestMessage.channel.send(
-        `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${REPORT_INACTIVITY_THRESHOLD_MINUTES} minutes old.`
-      ).catch((err) => {
+      const reminderText = latestMessage
+        ? `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${REPORT_INACTIVITY_THRESHOLD_MINUTES} minutes old.`
+        : `⚠️ <@${activeUser.userId}> you are clocked in for over ${REPORT_INACTIVITY_THRESHOLD_MINUTES} minutes and still have no report in this session. Please create/update your report in freecash-reports.`;
+
+      await targetChannel.send(reminderText).catch((err) => {
         console.warn(
-          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${latestMessage.channelId} reason=${err?.message || err}`
+          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${threadIdForLog} reason=${err?.message || err}`
         );
       });
 
       reportReminderState.set(activeUser.userId, {
-        lastMessageId: latestMessage.id,
+        lastMessageId: latestMessageId,
         remindedAt: now,
       });
     }
