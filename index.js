@@ -1047,7 +1047,7 @@ async function resolveFreecashReportsForumChannel() {
   return null;
 }
 
-async function getLatestForumMessageForUser(forumChannel, userId) {
+async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs = 0) {
   const threadMap = new Map();
 
   const guildActive = await forumChannel.guild.channels.fetchActiveThreads().catch((err) => {
@@ -1097,6 +1097,7 @@ async function getLatestForumMessageForUser(forumChannel, userId) {
 
     for (const message of messages.values()) {
       if (message.author?.id !== userId || message.author?.bot) continue;
+      if (message.createdTimestamp < sessionStartMs) continue;
 
       if (!latestMessage || message.createdTimestamp > latestMessage.createdTimestamp) {
         latestMessage = message;
@@ -1107,6 +1108,7 @@ async function getLatestForumMessageForUser(forumChannel, userId) {
     if (
       starter?.author?.id === userId &&
       !starter.author?.bot &&
+      starter.createdTimestamp >= sessionStartMs &&
       (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
     ) {
       latestMessage = starter;
@@ -1130,7 +1132,10 @@ async function sweepInactiveFreecashReports() {
       await loadFromDisk();
       return Object.entries(timesheet)
         .filter(([, record]) => !!record?.active)
-        .map(([userId]) => ({ userId }));
+        .map(([userId, record]) => ({
+          userId,
+          activeStart: record.active,
+        }));
     });
 
     console.log(
@@ -1138,11 +1143,16 @@ async function sweepInactiveFreecashReports() {
     );
 
     for (const activeUser of activeUsers) {
-      const latestMessage = await getLatestForumMessageForUser(forumChannel, activeUser.userId);
+      const sessionStartMs = new Date(activeUser.activeStart).getTime();
+      const latestMessage = await getLatestForumMessageForUser(
+        forumChannel,
+        activeUser.userId,
+        Number.isFinite(sessionStartMs) ? sessionStartMs : 0
+      );
 
       if (!latestMessage) {
         console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages`
+          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
