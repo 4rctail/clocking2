@@ -12,6 +12,11 @@ const DATA_FILE = "./timesheet.json";
 const TOPUP_FILE = "./topup.json";
 const TIME_TRACKER_CHANNEL_NAME = "time-tracker";
 const TIME_TRACKER_CHANNEL_ID_FALLBACK = "1460301758940188733";
+const FREECASH_REPORTS_FORUM_NAME = "freecash-reports";
+const FREECASH_REPORTS_FORUM_ID_FALLBACK = "1478653159529381980";
+const REPORT_INACTIVITY_THRESHOLD_MINUTES = 20;
+const REPORT_INACTIVITY_CHECK_INTERVAL_MS = 60_000;
+const REPORT_REMINDER_REPEAT_INTERVAL_MS = 5 * 60_000;
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -115,6 +120,8 @@ let timesheet = {};
 let topupData = { channels: {} };
 let gitCommitTimer = null;
 let topupGitCommitTimer = null;
+let reportInactivitySweepRunning = false;
+const reportReminderState = new Map();
 
 function mergeUserData(oldKey, newUserId) {
   const oldData = timesheet[oldKey];
@@ -993,6 +1000,204 @@ function startAutoClockOutWatcher() {
       console.error("❌ Auto clock-out interval failure:", err);
     });
   }, AUTO_CLOCK_OUT_INTERVAL_MS);
+}
+
+async function resolveFreecashReportsForumChannel() {
+  const fromCache = client.channels.cache.find(
+    (channel) =>
+      channel?.type === ChannelType.GuildForum &&
+      channel?.name === FREECASH_REPORTS_FORUM_NAME
+  );
+  if (fromCache) {
+    console.log(
+      `[REPORT_DEBUG] forumResolved source=cache_name forumChannelId=${fromCache.id} fallbackId=${FREECASH_REPORTS_FORUM_ID_FALLBACK}`
+    );
+    return fromCache;
+  }
+
+  for (const guild of client.guilds.cache.values()) {
+    const channels = await guild.channels.fetch().catch(() => null);
+    if (!channels) continue;
+
+    const match = channels.find(
+      (channel) =>
+        channel?.type === ChannelType.GuildForum &&
+        channel?.name === FREECASH_REPORTS_FORUM_NAME
+    );
+
+    if (match) {
+      console.log(
+        `[REPORT_DEBUG] forumResolved source=guild_name forumChannelId=${match.id} fallbackId=${FREECASH_REPORTS_FORUM_ID_FALLBACK} guildId=${guild.id}`
+      );
+      return match;
+    }
+  }
+
+  const fallback = await client.channels.fetch(FREECASH_REPORTS_FORUM_ID_FALLBACK).catch(() => null);
+  if (fallback?.type === ChannelType.GuildForum) {
+    console.log(
+      `[REPORT_DEBUG] forumResolved source=fallback_id forumChannelId=${fallback.id} fallbackId=${FREECASH_REPORTS_FORUM_ID_FALLBACK}`
+    );
+    return fallback;
+  }
+
+  console.warn(
+    `[REPORT_DEBUG] forumResolved source=none forumChannelId=none fallbackId=${FREECASH_REPORTS_FORUM_ID_FALLBACK}`
+  );
+  return null;
+}
+
+async function getLatestForumMessageForUser(forumChannel, userId) {
+  const threadMap = new Map();
+
+  const guildActive = await forumChannel.guild.channels.fetchActiveThreads().catch((err) => {
+    console.warn(
+      `[REPORT_DEBUG] forumChannelId=${forumChannel.id} action=fetch_active_threads_failed reason=${err?.message || err}`
+    );
+    return null;
+  });
+
+  if (guildActive?.threads) {
+    for (const [threadId, thread] of guildActive.threads) {
+      if (thread?.parentId === forumChannel.id) {
+        threadMap.set(threadId, thread);
+      }
+    }
+  }
+
+  const archived = await forumChannel.threads.fetchArchived({ limit: 100 }).catch((err) => {
+    console.warn(
+      `[REPORT_DEBUG] forumChannelId=${forumChannel.id} action=fetch_archived_threads_failed reason=${err?.message || err}`
+    );
+    return null;
+  });
+
+  if (archived?.threads) {
+    for (const [threadId, thread] of archived.threads) {
+      threadMap.set(threadId, thread);
+    }
+  }
+
+  const scannedThreadIds = Array.from(threadMap.keys());
+  console.log(
+    `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
+  );
+
+  let latestMessage = null;
+
+  for (const thread of threadMap.values()) {
+    const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
+      console.warn(
+        `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_messages_failed reason=${err?.message || err}`
+      );
+      return null;
+    });
+
+    if (!messages) continue;
+
+    for (const message of messages.values()) {
+      if (message.author?.id !== userId || message.author?.bot) continue;
+
+      if (!latestMessage || message.createdTimestamp > latestMessage.createdTimestamp) {
+        latestMessage = message;
+      }
+    }
+
+    const starter = await thread.fetchStarterMessage().catch(() => null);
+    if (
+      starter?.author?.id === userId &&
+      !starter.author?.bot &&
+      (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
+    ) {
+      latestMessage = starter;
+    }
+  }
+
+  return latestMessage;
+}
+
+async function sweepInactiveFreecashReports() {
+  if (reportInactivitySweepRunning) return;
+  if (!client.isReady()) return;
+
+  reportInactivitySweepRunning = true;
+
+  try {
+    const forumChannel = await resolveFreecashReportsForumChannel();
+    if (!forumChannel) return;
+
+    const activeUsers = await withTimesheetWriteLock(async () => {
+      await loadFromDisk();
+      return Object.entries(timesheet)
+        .filter(([, record]) => !!record?.active)
+        .map(([userId]) => ({ userId }));
+    });
+
+    console.log(
+      `[REPORT_DEBUG] sweepStart forumChannelId=${forumChannel.id} activeClockedInUsers=${activeUsers.length}`
+    );
+
+    for (const activeUser of activeUsers) {
+      const latestMessage = await getLatestForumMessageForUser(forumChannel, activeUser.userId);
+
+      if (!latestMessage) {
+        console.log(
+          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages`
+        );
+        continue;
+      }
+
+      const ageMinutes = (Date.now() - latestMessage.createdTimestamp) / 60_000;
+      const state = reportReminderState.get(activeUser.userId);
+      const overLimit = ageMinutes >= REPORT_INACTIVITY_THRESHOLD_MINUTES;
+
+      console.log(
+        `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=${latestMessage.id} threadId=${latestMessage.channelId} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
+      );
+
+      if (!overLimit) {
+        reportReminderState.delete(activeUser.userId);
+        continue;
+      }
+
+      const now = Date.now();
+      const sameLatestMessage = state?.lastMessageId === latestMessage.id;
+      const shouldRepeatReminder =
+        sameLatestMessage &&
+        state?.remindedAt &&
+        now - state.remindedAt >= REPORT_REMINDER_REPEAT_INTERVAL_MS;
+      const shouldSendReminder = !sameLatestMessage || shouldRepeatReminder;
+
+      if (!shouldSendReminder) {
+        continue;
+      }
+
+      await latestMessage.channel.send(
+        `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${REPORT_INACTIVITY_THRESHOLD_MINUTES} minutes old.`
+      ).catch((err) => {
+        console.warn(
+          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${latestMessage.channelId} reason=${err?.message || err}`
+        );
+      });
+
+      reportReminderState.set(activeUser.userId, {
+        lastMessageId: latestMessage.id,
+        remindedAt: now,
+      });
+    }
+  } catch (err) {
+    console.error("❌ Freecash report inactivity sweep failed:", err);
+  } finally {
+    reportInactivitySweepRunning = false;
+  }
+}
+
+function startFreecashReportInactivityWatcher() {
+  setInterval(() => {
+    sweepInactiveFreecashReports().catch((err) => {
+      console.error("❌ Freecash report inactivity interval failure:", err);
+    });
+  }, REPORT_INACTIVITY_CHECK_INTERVAL_MS);
 }
 
 // =======================
@@ -2212,6 +2417,9 @@ client.on("interactionCreate", async interaction => {
 
   await autoClockOutReachedSessions();
   startAutoClockOutWatcher();
+
+  await sweepInactiveFreecashReports();
+  startFreecashReportInactivityWatcher();
 
   startKeepAlive();
 
