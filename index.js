@@ -1049,24 +1049,49 @@ async function resolveFreecashReportsForumChannel() {
 async function getLatestForumMessageForUser(forumChannel, userId) {
   const threadMap = new Map();
 
-  const active = await forumChannel.threads.fetchActive().catch(() => null);
-  if (active?.threads) {
-    for (const [threadId, thread] of active.threads) {
-      threadMap.set(threadId, thread);
+  const guildActive = await forumChannel.guild.channels.fetchActiveThreads().catch((err) => {
+    console.warn(
+      `[REPORT_DEBUG] forumChannelId=${forumChannel.id} action=fetch_active_threads_failed reason=${err?.message || err}`
+    );
+    return null;
+  });
+
+  if (guildActive?.threads) {
+    for (const [threadId, thread] of guildActive.threads) {
+      if (thread?.parentId === forumChannel.id) {
+        threadMap.set(threadId, thread);
+      }
     }
   }
 
-  const archived = await forumChannel.threads.fetchArchived({ type: "public", limit: 100 }).catch(() => null);
+  const archived = await forumChannel.threads.fetchArchived({ limit: 100 }).catch((err) => {
+    console.warn(
+      `[REPORT_DEBUG] forumChannelId=${forumChannel.id} action=fetch_archived_threads_failed reason=${err?.message || err}`
+    );
+    return null;
+  });
+
   if (archived?.threads) {
     for (const [threadId, thread] of archived.threads) {
       threadMap.set(threadId, thread);
     }
   }
 
+  const scannedThreadIds = Array.from(threadMap.keys());
+  console.log(
+    `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
+  );
+
   let latestMessage = null;
 
   for (const thread of threadMap.values()) {
-    const messages = await thread.messages.fetch({ limit: 50 }).catch(() => null);
+    const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
+      console.warn(
+        `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_messages_failed reason=${err?.message || err}`
+      );
+      return null;
+    });
+
     if (!messages) continue;
 
     for (const message of messages.values()) {
@@ -1075,6 +1100,15 @@ async function getLatestForumMessageForUser(forumChannel, userId) {
       if (!latestMessage || message.createdTimestamp > latestMessage.createdTimestamp) {
         latestMessage = message;
       }
+    }
+
+    const starter = await thread.fetchStarterMessage().catch(() => null);
+    if (
+      starter?.author?.id === userId &&
+      !starter.author?.bot &&
+      (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
+    ) {
+      latestMessage = starter;
     }
   }
 
