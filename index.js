@@ -16,6 +16,7 @@ const FREECASH_REPORTS_FORUM_NAME = "freecash-reports";
 const FREECASH_REPORTS_FORUM_ID_FALLBACK = "1478653159529381980";
 const REPORT_INACTIVITY_THRESHOLD_MINUTES = 20;
 const REPORT_INACTIVITY_CHECK_INTERVAL_MS = 60_000;
+const REPORT_REMINDER_REPEAT_INTERVAL_MS = 5 * 60_000;
 const MANAGER_IDS = ["769554444534153238", "854713123851337758","921936530778517614"];
 const LEADER_IDS = ["769554444534153238", "854713123851337758","921936530778517614","1452657680090136664","726049317256691734","385856951114006528","1401902812299919520"];
 const GIT_TOKEN = process.env.GIT_TOKEN;
@@ -1159,7 +1160,15 @@ async function sweepInactiveFreecashReports() {
         continue;
       }
 
-      if (state?.lastMessageId === latestMessage.id) {
+      const now = Date.now();
+      const sameLatestMessage = state?.lastMessageId === latestMessage.id;
+      const shouldRepeatReminder =
+        sameLatestMessage &&
+        state?.remindedAt &&
+        now - state.remindedAt >= REPORT_REMINDER_REPEAT_INTERVAL_MS;
+      const shouldSendReminder = !sameLatestMessage || shouldRepeatReminder;
+
+      if (!shouldSendReminder) {
         continue;
       }
 
@@ -1173,7 +1182,7 @@ async function sweepInactiveFreecashReports() {
 
       reportReminderState.set(activeUser.userId, {
         lastMessageId: latestMessage.id,
-        remindedAt: Date.now(),
+        remindedAt: now,
       });
     }
   } catch (err) {
