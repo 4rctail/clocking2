@@ -1051,7 +1051,7 @@ async function resolveFreecashReportsForumChannel() {
   return null;
 }
 
-async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs = 0) {
+async function getLatestCreatedForumThreadForUser(forumChannel, userId, sessionStartMs = 0) {
   const threadMap = new Map();
 
   const guildActive = await forumChannel.guild.channels.fetchActiveThreads().catch((err) => {
@@ -1078,7 +1078,9 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
 
   if (archived?.threads) {
     for (const [threadId, thread] of archived.threads) {
-      threadMap.set(threadId, thread);
+      if (thread?.parentId === forumChannel.id) {
+        threadMap.set(threadId, thread);
+      }
     }
   }
 
@@ -1087,18 +1089,52 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
   );
 
-  let latestMessage = null;
+  let latestThread = null;
+  let latestStarterTimestamp = 0;
 
   for (const thread of threadMap.values()) {
-    const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
+    const starter = await thread.fetchStarterMessage().catch((err) => {
       console.warn(
-        `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_messages_failed reason=${err?.message || err}`
+        `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_starter_failed reason=${err?.message || err}`
       );
       return null;
     });
 
-    if (!messages) continue;
+    if (!starter) continue;
+    if (starter.author?.id !== userId || starter.author?.bot) continue;
+    if (starter.createdTimestamp < sessionStartMs) continue;
 
+    if (!latestThread || starter.createdTimestamp > latestStarterTimestamp) {
+      latestThread = thread;
+      latestStarterTimestamp = starter.createdTimestamp;
+    }
+  }
+
+  if (!latestThread) {
+    console.log(
+      `[REPORT_DEBUG] user=${userId} action=select_latest_thread threadId=none starterTimestamp=none sessionStartMs=${sessionStartMs}`
+    );
+    return null;
+  }
+
+  console.log(
+    `[REPORT_DEBUG] user=${userId} action=select_latest_thread threadId=${latestThread.id} starterTimestamp=${latestStarterTimestamp} sessionStartMs=${sessionStartMs}`
+  );
+
+  return latestThread;
+}
+
+async function getLatestUserMessageInThread(thread, userId, sessionStartMs = 0) {
+  const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
+    console.warn(
+      `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_messages_failed reason=${err?.message || err}`
+    );
+    return null;
+  });
+
+  let latestMessage = null;
+
+  if (messages) {
     for (const message of messages.values()) {
       if (message.author?.id !== userId || message.author?.bot) continue;
       if (message.createdTimestamp < sessionStartMs) continue;
@@ -1107,17 +1143,22 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
         latestMessage = message;
       }
     }
+  }
 
+  if (!latestMessage) {
     const starter = await thread.fetchStarterMessage().catch(() => null);
     if (
       starter?.author?.id === userId &&
       !starter.author?.bot &&
-      starter.createdTimestamp >= sessionStartMs &&
-      (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
+      starter.createdTimestamp >= sessionStartMs
     ) {
       latestMessage = starter;
     }
   }
+
+  console.log(
+    `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=select_latest_thread_message messageId=${latestMessage?.id || "none"} messageTimestamp=${latestMessage?.createdTimestamp || "none"}`
+  );
 
   return latestMessage;
 }
@@ -1148,15 +1189,29 @@ async function sweepInactiveFreecashReports() {
 
     for (const activeUser of activeUsers) {
       const sessionStartMs = new Date(activeUser.activeStart).getTime();
-      const latestMessage = await getLatestForumMessageForUser(
+      const safeSessionStartMs = Number.isFinite(sessionStartMs) ? sessionStartMs : 0;
+      const latestThread = await getLatestCreatedForumThreadForUser(
         forumChannel,
         activeUser.userId,
-        Number.isFinite(sessionStartMs) ? sessionStartMs : 0
+        safeSessionStartMs
+      );
+
+      if (!latestThread) {
+        console.log(
+          `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=none latestThreadStarterTimestamp=none latestMessageTimestamp=none action=skip_no_latest_created_thread sessionStart=${activeUser.activeStart || "unknown"}`
+        );
+        continue;
+      }
+
+      const latestMessage = await getLatestUserMessageInThread(
+        latestThread,
+        activeUser.userId,
+        safeSessionStartMs
       );
 
       if (!latestMessage) {
         console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
+          `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=${latestThread.id} latestMessageId=none latestMessageTimestamp=none action=skip_no_messages_in_thread sessionStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
@@ -1166,7 +1221,7 @@ async function sweepInactiveFreecashReports() {
       const overLimit = ageMinutes >= REPORT_INACTIVITY_THRESHOLD_MINUTES;
 
       console.log(
-        `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=${latestMessage.id} threadId=${latestMessage.channelId} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
+        `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=${latestThread.id} latestMessageId=${latestMessage.id} latestMessageTimestamp=${latestMessage.createdTimestamp} reminderDestinationThreadId=${latestThread.id} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
       );
 
       if (!overLimit) {
@@ -1188,11 +1243,11 @@ async function sweepInactiveFreecashReports() {
 
       const messageAgeMinutes = Math.floor(ageMinutes);
 
-      await latestMessage.channel.send(
+      await latestThread.send(
         `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${messageAgeMinutes} minutes old.`
       ).catch((err) => {
         console.warn(
-          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${latestMessage.channelId} reason=${err?.message || err}`
+          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed reminderDestinationThreadId=${latestThread.id} reason=${err?.message || err}`
         );
       });
 
