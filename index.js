@@ -1051,7 +1051,7 @@ async function resolveFreecashReportsForumChannel() {
   return null;
 }
 
-async function getLatestCreatedForumThreadForUser(forumChannel, userId, sessionStartMs = 0) {
+async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs = 0) {
   const threadMap = new Map();
 
   const guildActive = await forumChannel.guild.channels.fetchActiveThreads().catch((err) => {
@@ -1078,9 +1078,7 @@ async function getLatestCreatedForumThreadForUser(forumChannel, userId, sessionS
 
   if (archived?.threads) {
     for (const [threadId, thread] of archived.threads) {
-      if (thread?.parentId === forumChannel.id) {
-        threadMap.set(threadId, thread);
-      }
+      threadMap.set(threadId, thread);
     }
   }
 
@@ -1089,52 +1087,18 @@ async function getLatestCreatedForumThreadForUser(forumChannel, userId, sessionS
     `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
   );
 
-  let latestThread = null;
-  let latestStarterTimestamp = 0;
+  let latestMessage = null;
 
   for (const thread of threadMap.values()) {
-    const starter = await thread.fetchStarterMessage().catch((err) => {
+    const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
       console.warn(
-        `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_starter_failed reason=${err?.message || err}`
+        `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_messages_failed reason=${err?.message || err}`
       );
       return null;
     });
 
-    if (!starter) continue;
-    if (starter.author?.id !== userId || starter.author?.bot) continue;
-    if (starter.createdTimestamp < sessionStartMs) continue;
+    if (!messages) continue;
 
-    if (!latestThread || starter.createdTimestamp > latestStarterTimestamp) {
-      latestThread = thread;
-      latestStarterTimestamp = starter.createdTimestamp;
-    }
-  }
-
-  if (!latestThread) {
-    console.log(
-      `[REPORT_DEBUG] user=${userId} action=select_latest_thread threadId=none starterTimestamp=none sessionStartMs=${sessionStartMs}`
-    );
-    return null;
-  }
-
-  console.log(
-    `[REPORT_DEBUG] user=${userId} action=select_latest_thread threadId=${latestThread.id} starterTimestamp=${latestStarterTimestamp} sessionStartMs=${sessionStartMs}`
-  );
-
-  return latestThread;
-}
-
-async function getLatestUserMessageInThread(thread, userId, sessionStartMs = 0) {
-  const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
-    console.warn(
-      `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=fetch_messages_failed reason=${err?.message || err}`
-    );
-    return null;
-  });
-
-  let latestMessage = null;
-
-  if (messages) {
     for (const message of messages.values()) {
       if (message.author?.id !== userId || message.author?.bot) continue;
       if (message.createdTimestamp < sessionStartMs) continue;
@@ -1143,22 +1107,17 @@ async function getLatestUserMessageInThread(thread, userId, sessionStartMs = 0) 
         latestMessage = message;
       }
     }
-  }
 
-  if (!latestMessage) {
     const starter = await thread.fetchStarterMessage().catch(() => null);
     if (
       starter?.author?.id === userId &&
       !starter.author?.bot &&
-      starter.createdTimestamp >= sessionStartMs
+      starter.createdTimestamp >= sessionStartMs &&
+      (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
     ) {
       latestMessage = starter;
     }
   }
-
-  console.log(
-    `[REPORT_DEBUG] user=${userId} threadId=${thread.id} action=select_latest_thread_message messageId=${latestMessage?.id || "none"} messageTimestamp=${latestMessage?.createdTimestamp || "none"}`
-  );
 
   return latestMessage;
 }
@@ -1189,59 +1148,29 @@ async function sweepInactiveFreecashReports() {
 
     for (const activeUser of activeUsers) {
       const sessionStartMs = new Date(activeUser.activeStart).getTime();
-      const safeSessionStartMs = Number.isFinite(sessionStartMs) ? sessionStartMs : 0;
-      const latestThread = await getLatestCreatedForumThreadForUser(
+      const latestMessage = await getLatestForumMessageForUser(
         forumChannel,
         activeUser.userId,
-        safeSessionStartMs
-      );
-
-      if (!latestThread) {
-        console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=none latestThreadStarterTimestamp=none latestMessageTimestamp=none action=skip_no_latest_created_thread sessionStart=${activeUser.activeStart || "unknown"}`
-        );
-        continue;
-      }
-
-      const latestMessage = await getLatestUserMessageInThread(
-        latestThread,
-        activeUser.userId,
-        safeSessionStartMs
+        Number.isFinite(sessionStartMs) ? sessionStartMs : 0
       );
 
       if (!latestMessage) {
         console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=${latestThread.id} latestMessageId=none latestMessageTimestamp=none action=skip_no_messages_in_thread sessionStart=${activeUser.activeStart || "unknown"}`
+          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
 
+      const ageMinutes = (Date.now() - latestMessage.createdTimestamp) / 60_000;
       const state = reportReminderState.get(activeUser.userId);
-      const threadMessageTs = latestMessage.createdTimestamp;
-      const previousActivityTs = Number.isFinite(state?.lastActivityTimestamp)
-        ? state.lastActivityTimestamp
-        : null;
-      const effectiveActivityTs = Number.isFinite(previousActivityTs)
-        ? Math.max(previousActivityTs, threadMessageTs)
-        : threadMessageTs;
-      const ageMinutes = (Date.now() - effectiveActivityTs) / 60_000;
       const overLimit = ageMinutes >= REPORT_INACTIVITY_THRESHOLD_MINUTES;
 
       console.log(
-        `[REPORT_DEBUG] user=${activeUser.userId} prevLastThreadId=${state?.lastThreadId || "none"} prevLastActivityTimestamp=${previousActivityTs || "none"} currentSelectedThreadId=${latestThread.id} threadMessageTs=${threadMessageTs} effectiveActivityTs=${effectiveActivityTs}`
-      );
-
-      console.log(
-        `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=${latestThread.id} latestMessageId=${latestMessage.id} latestMessageTimestamp=${latestMessage.createdTimestamp} reminderDestinationThreadId=${latestThread.id} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
+        `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=${latestMessage.id} threadId=${latestMessage.channelId} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
       );
 
       if (!overLimit) {
-        reportReminderState.set(activeUser.userId, {
-          lastThreadId: latestThread.id,
-          lastMessageId: latestMessage.id,
-          lastActivityTimestamp: effectiveActivityTs,
-          remindedAt: null,
-        });
+        reportReminderState.delete(activeUser.userId);
         continue;
       }
 
@@ -1259,19 +1188,17 @@ async function sweepInactiveFreecashReports() {
 
       const messageAgeMinutes = Math.floor(ageMinutes);
 
-      await latestThread.send(
+      await latestMessage.channel.send(
         `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${messageAgeMinutes} minutes old.`
       ).catch((err) => {
         console.warn(
-          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed reminderDestinationThreadId=${latestThread.id} reason=${err?.message || err}`
+          `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${latestMessage.channelId} reason=${err?.message || err}`
         );
       });
 
       reportReminderState.set(activeUser.userId, {
-        lastThreadId: latestThread.id,
         lastMessageId: latestMessage.id,
-        lastActivityTimestamp: effectiveActivityTs,
-        remindedAt: shouldSendReminder ? now : state?.remindedAt || null,
+        remindedAt: now,
       });
     }
   } catch (err) {
