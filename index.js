@@ -390,10 +390,14 @@ async function safeEdit(interaction, payload) {
     } else {
       await interaction.editReply(payload);
     }
+    return { ok: true };
   } catch (err) {
-    // Ignore if interaction is unknown or expired
-    if (err.code === 10062) return;
+    // Interaction tokens can expire while a live updater is still running.
+    if (err.code === 10062 || err.code === 50027) {
+      return { ok: false, code: err.code };
+    }
     console.error("Interaction update failed:", err);
+    return { ok: false, code: err.code ?? "UNKNOWN" };
   }
 }
 
@@ -2030,7 +2034,10 @@ client.on("interactionCreate", async interaction => {
         liveStatusTimers.delete(uid);
       }
   
-      await safeEdit(interaction, { embeds: [buildEmbed()] });
+      const initialResult = await safeEdit(interaction, { embeds: [buildEmbed()] });
+      if (!initialResult?.ok && (initialResult.code === 10062 || initialResult.code === 50027)) {
+        return;
+      }
   
       const timer = setInterval(async () => {
         if (!timesheet[uid]?.active) {
@@ -2038,7 +2045,11 @@ client.on("interactionCreate", async interaction => {
           liveStatusTimers.delete(uid);
           return;
         }
-        await safeEdit(interaction, { embeds: [buildEmbed()] });
+        const result = await safeEdit(interaction, { embeds: [buildEmbed()] });
+        if (!result?.ok && (result.code === 10062 || result.code === 50027)) {
+          clearInterval(timer);
+          liveStatusTimers.delete(uid);
+        }
       }, 5000);
   
       liveStatusTimers.set(uid, timer);
