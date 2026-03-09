@@ -1186,8 +1186,10 @@ async function sweepInactiveFreecashReports() {
         continue;
       }
 
+      const messageAgeMinutes = Math.floor(ageMinutes);
+
       await latestMessage.channel.send(
-        `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${REPORT_INACTIVITY_THRESHOLD_MINUTES} minutes old.`
+        `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${messageAgeMinutes} minutes old.`
       ).catch((err) => {
         console.warn(
           `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${latestMessage.channelId} reason=${err?.message || err}`
