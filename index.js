@@ -1216,16 +1216,32 @@ async function sweepInactiveFreecashReports() {
         continue;
       }
 
-      const ageMinutes = (Date.now() - latestMessage.createdTimestamp) / 60_000;
       const state = reportReminderState.get(activeUser.userId);
+      const threadMessageTs = latestMessage.createdTimestamp;
+      const previousActivityTs = Number.isFinite(state?.lastActivityTimestamp)
+        ? state.lastActivityTimestamp
+        : null;
+      const effectiveActivityTs = Number.isFinite(previousActivityTs)
+        ? Math.max(previousActivityTs, threadMessageTs)
+        : threadMessageTs;
+      const ageMinutes = (Date.now() - effectiveActivityTs) / 60_000;
       const overLimit = ageMinutes >= REPORT_INACTIVITY_THRESHOLD_MINUTES;
+
+      console.log(
+        `[REPORT_DEBUG] user=${activeUser.userId} prevLastThreadId=${state?.lastThreadId || "none"} prevLastActivityTimestamp=${previousActivityTs || "none"} currentSelectedThreadId=${latestThread.id} threadMessageTs=${threadMessageTs} effectiveActivityTs=${effectiveActivityTs}`
+      );
 
       console.log(
         `[REPORT_DEBUG] user=${activeUser.userId} latestThreadId=${latestThread.id} latestMessageId=${latestMessage.id} latestMessageTimestamp=${latestMessage.createdTimestamp} reminderDestinationThreadId=${latestThread.id} ageMinutes=${ageMinutes.toFixed(2)} overLimit=${overLimit}`
       );
 
       if (!overLimit) {
-        reportReminderState.delete(activeUser.userId);
+        reportReminderState.set(activeUser.userId, {
+          lastThreadId: latestThread.id,
+          lastMessageId: latestMessage.id,
+          lastActivityTimestamp: effectiveActivityTs,
+          remindedAt: null,
+        });
         continue;
       }
 
@@ -1252,8 +1268,10 @@ async function sweepInactiveFreecashReports() {
       });
 
       reportReminderState.set(activeUser.userId, {
+        lastThreadId: latestThread.id,
         lastMessageId: latestMessage.id,
-        remindedAt: now,
+        lastActivityTimestamp: effectiveActivityTs,
+        remindedAt: shouldSendReminder ? now : state?.remindedAt || null,
       });
     }
   } catch (err) {
