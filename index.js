@@ -1101,22 +1101,14 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
   );
 
-  let firstSessionMessage = null;
-  let latestImageMessage = null;
+  let latestSessionMessage = null;
 
   const considerMessage = (message) => {
     if (message?.author?.id !== userId || message.author?.bot) return;
     if (message.createdTimestamp < sessionStartMs) return;
 
-    if (!firstSessionMessage || message.createdTimestamp < firstSessionMessage.createdTimestamp) {
-      firstSessionMessage = message;
-    }
-
-    if (
-      messageHasImageAttachment(message) &&
-      (!latestImageMessage || message.createdTimestamp > latestImageMessage.createdTimestamp)
-    ) {
-      latestImageMessage = message;
+    if (!latestSessionMessage || message.createdTimestamp > latestSessionMessage.createdTimestamp) {
+      latestSessionMessage = message;
     }
   };
 
@@ -1138,7 +1130,7 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     considerMessage(starter);
   }
 
-  return latestImageMessage || firstSessionMessage;
+  return latestSessionMessage;
 }
 
 
