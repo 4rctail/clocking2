@@ -1051,6 +1051,20 @@ async function resolveFreecashReportsForumChannel() {
   return null;
 }
 
+function messageHasImageAttachment(message) {
+  if (!message?.attachments?.size) return false;
+
+  for (const attachment of message.attachments.values()) {
+    const contentType = attachment?.contentType?.toLowerCase() || "";
+    const name = attachment?.name?.toLowerCase() || "";
+
+    if (contentType.startsWith("image/")) return true;
+    if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|heif|tiff?)$/i.test(name)) return true;
+  }
+
+  return false;
+}
+
 async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs = 0) {
   const threadMap = new Map();
 
@@ -1102,6 +1116,7 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     for (const message of messages.values()) {
       if (message.author?.id !== userId || message.author?.bot) continue;
       if (message.createdTimestamp < sessionStartMs) continue;
+      if (!messageHasImageAttachment(message)) continue;
 
       if (!latestMessage || message.createdTimestamp > latestMessage.createdTimestamp) {
         latestMessage = message;
@@ -1113,6 +1128,7 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
       starter?.author?.id === userId &&
       !starter.author?.bot &&
       starter.createdTimestamp >= sessionStartMs &&
+      messageHasImageAttachment(starter) &&
       (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
     ) {
       latestMessage = starter;
@@ -1156,7 +1172,7 @@ async function sweepInactiveFreecashReports() {
 
       if (!latestMessage) {
         console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
+          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_with_image_in_session sessionStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
@@ -1186,8 +1202,10 @@ async function sweepInactiveFreecashReports() {
         continue;
       }
 
+      const messageAgeMinutes = Math.floor(ageMinutes);
+
       await latestMessage.channel.send(
-        `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${REPORT_INACTIVITY_THRESHOLD_MINUTES} minutes old.`
+        `⚠️ <@${activeUser.userId}> please send your report in this thread. Your latest message is over ${messageAgeMinutes} minutes old.`
       ).catch((err) => {
         console.warn(
           `[REPORT_DEBUG] user=${activeUser.userId} action=reminder_failed threadId=${latestMessage.channelId} reason=${err?.message || err}`
