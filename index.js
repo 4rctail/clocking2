@@ -1101,14 +1101,22 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
   );
 
-  let latestSessionMessage = null;
+  let firstSessionMessage = null;
+  let latestImageMessage = null;
 
   const considerMessage = (message) => {
     if (message?.author?.id !== userId || message.author?.bot) return;
     if (message.createdTimestamp < sessionStartMs) return;
 
-    if (!latestSessionMessage || message.createdTimestamp > latestSessionMessage.createdTimestamp) {
-      latestSessionMessage = message;
+    if (!firstSessionMessage || message.createdTimestamp < firstSessionMessage.createdTimestamp) {
+      firstSessionMessage = message;
+    }
+
+    if (
+      messageHasImageAttachment(message) &&
+      (!latestImageMessage || message.createdTimestamp > latestImageMessage.createdTimestamp)
+    ) {
+      latestImageMessage = message;
     }
   };
 
@@ -1130,8 +1138,9 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     considerMessage(starter);
   }
 
-  return latestSessionMessage;
+  return latestImageMessage || firstSessionMessage;
 }
+
 
 
 async function sweepInactiveFreecashReports() {
