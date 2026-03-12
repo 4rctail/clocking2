@@ -1101,7 +1101,24 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
     `[REPORT_DEBUG] user=${userId} forumChannelId=${forumChannel.id} scannedThreadCount=${scannedThreadIds.length} scannedThreadIds=${scannedThreadIds.join(",") || "none"}`
   );
 
-  let latestMessage = null;
+  let firstSessionMessage = null;
+  let latestImageMessage = null;
+
+  const considerMessage = (message) => {
+    if (message?.author?.id !== userId || message.author?.bot) return;
+    if (message.createdTimestamp < sessionStartMs) return;
+
+    if (!firstSessionMessage || message.createdTimestamp < firstSessionMessage.createdTimestamp) {
+      firstSessionMessage = message;
+    }
+
+    if (
+      messageHasImageAttachment(message) &&
+      (!latestImageMessage || message.createdTimestamp > latestImageMessage.createdTimestamp)
+    ) {
+      latestImageMessage = message;
+    }
+  };
 
   for (const thread of threadMap.values()) {
     const messages = await thread.messages.fetch({ limit: 100 }).catch((err) => {
@@ -1111,32 +1128,19 @@ async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs
       return null;
     });
 
-    if (!messages) continue;
-
-    for (const message of messages.values()) {
-      if (message.author?.id !== userId || message.author?.bot) continue;
-      if (message.createdTimestamp < sessionStartMs) continue;
-      if (!messageHasImageAttachment(message)) continue;
-
-      if (!latestMessage || message.createdTimestamp > latestMessage.createdTimestamp) {
-        latestMessage = message;
+    if (messages) {
+      for (const message of messages.values()) {
+        considerMessage(message);
       }
     }
 
     const starter = await thread.fetchStarterMessage().catch(() => null);
-    if (
-      starter?.author?.id === userId &&
-      !starter.author?.bot &&
-      starter.createdTimestamp >= sessionStartMs &&
-      messageHasImageAttachment(starter) &&
-      (!latestMessage || starter.createdTimestamp > latestMessage.createdTimestamp)
-    ) {
-      latestMessage = starter;
-    }
+    considerMessage(starter);
   }
 
-  return latestMessage;
+  return latestImageMessage || firstSessionMessage;
 }
+
 
 async function sweepInactiveFreecashReports() {
   if (reportInactivitySweepRunning) return;
