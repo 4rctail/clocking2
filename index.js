@@ -1176,7 +1176,7 @@ async function sweepInactiveFreecashReports() {
 
       if (!latestMessage) {
         console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
+          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_with_image_in_session sessionStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
