@@ -1051,6 +1051,20 @@ async function resolveFreecashReportsForumChannel() {
   return null;
 }
 
+function messageHasImageAttachment(message) {
+  if (!message?.attachments?.size) return false;
+
+  for (const attachment of message.attachments.values()) {
+    const contentType = attachment?.contentType?.toLowerCase() || "";
+    const name = attachment?.name?.toLowerCase() || "";
+
+    if (contentType.startsWith("image/")) return true;
+    if (/\.(png|jpe?g|gif|webp|bmp|svg|heic|heif|tiff?)$/i.test(name)) return true;
+  }
+
+  return false;
+}
+
 async function getLatestForumMessageForUser(forumChannel, userId, sessionStartMs = 0) {
   const threadMap = new Map();
 
@@ -1154,7 +1168,7 @@ async function sweepInactiveFreecashReports() {
 
       if (!latestMessage) {
         console.log(
-          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_in_session sessionStart=${activeUser.activeStart || "unknown"}`
+          `[REPORT_DEBUG] user=${activeUser.userId} latestMessageId=none threadId=none ageMinutes=none action=skip_no_messages_with_image_in_session sessionStart=${activeUser.activeStart || "unknown"}`
         );
         continue;
       }
