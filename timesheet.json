@@ -9199,7 +9199,13 @@
     "lastKnownNames": [
       "loraine dimayuga"
     ],
-    "logs": [],
-    "active": "2026-03-21T07:50:18.044Z"
+    "logs": [
+      {
+        "start": "2026-03-21T07:50:18.044Z",
+        "end": "2026-03-21T08:26:40.289Z",
+        "hours": 0.6061791666666667
+      }
+    ],
+    "active": null
   }
 }
