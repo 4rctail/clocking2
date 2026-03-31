@@ -713,6 +713,41 @@ function formatSessionPH(startISO, endISO) {
   return `${datePart}, ${timePart}`;
 }
 
+function formatSessionCompactPH(startISO, endISO) {
+  const s = new Date(startISO);
+  const e = new Date(endISO);
+
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PH_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const timeParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PH_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const sDate = dateParts.format(s);
+  const eDate = dateParts.format(e);
+  const sTime = timeParts.format(s);
+  const eTime = timeParts.format(e);
+
+  if (sDate === eDate) {
+    return `${sDate}, ${sTime}-${eTime}`;
+  }
+
+  const [sMonth, sDay, sYear] = sDate.split("/");
+  const [eMonth, eDay, eYear] = eDate.split("/");
+  if (sYear === eYear && sMonth === eMonth) {
+    return `${sMonth}/${sDay}-${eDay}/${sYear}, ${sTime}-${eTime}`;
+  }
+
+  return `${sDate}-${eDate}, ${sTime}-${eTime}`;
+}
+
 
 function parseDatePH(str, end = false) {
   if (!str) return null;
@@ -744,49 +779,42 @@ function parseHHMM(value) {
   return (Number(match[1]) * 60) + Number(match[2]);
 }
 
-function getPHClockMinutes(date) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: PH_TZ,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-
-  const hour = Number(parts.find((p) => p.type === "hour")?.value || 0);
-  const minute = Number(parts.find((p) => p.type === "minute")?.value || 0);
-  return (hour * 60) + minute;
-}
-
-function overlapsNightshiftStrict(sessionStart, sessionEnd, shiftStartMin, shiftEndMin) {
+function overlapsShiftWindow(sessionStart, sessionEnd, shiftStartMin, shiftEndMin, rangeStart, rangeEnd) {
   if (!(sessionStart instanceof Date) || !(sessionEnd instanceof Date)) return null;
   if (sessionEnd <= sessionStart) return null;
+  if (!(rangeStart instanceof Date) || !(rangeEnd instanceof Date)) return null;
+  if (rangeEnd < rangeStart) return null;
 
-  const startMin = getPHClockMinutes(sessionStart);
-  let endMin = getPHClockMinutes(sessionEnd);
-  if (sessionEnd <= sessionStart || endMin <= startMin) endMin += 1440;
-
-  const shiftDuration = shiftEndMin > shiftStartMin
+  const shiftDurationMinutes = shiftEndMin > shiftStartMin
     ? shiftEndMin - shiftStartMin
     : (shiftEndMin + 1440) - shiftStartMin;
 
-  const shiftWindows = [
-    [shiftStartMin, shiftStartMin + shiftDuration],
-    [shiftStartMin + 1440, shiftStartMin + 1440 + shiftDuration],
-  ];
+  let bestOverlapMinutes = 0;
+  let totalOverlapMinutes = 0;
+  const oneDayMs = 24 * 60 * 60 * 1000;
 
-  let bestOverlap = 0;
-  for (const [wStart, wEnd] of shiftWindows) {
-    const overlap = Math.max(0, Math.min(endMin, wEnd) - Math.max(startMin, wStart));
-    if (overlap > bestOverlap) bestOverlap = overlap;
+  for (let dayCursor = new Date(rangeStart.getTime()); dayCursor <= rangeEnd; dayCursor = new Date(dayCursor.getTime() + oneDayMs)) {
+    const windowStart = new Date(dayCursor.getTime() + (shiftStartMin * 60 * 1000));
+    const shiftEndOffset = shiftEndMin > shiftStartMin ? shiftEndMin : shiftEndMin + 1440;
+    const windowEnd = new Date(dayCursor.getTime() + (shiftEndOffset * 60 * 1000));
+
+    const overlapMs = Math.max(0, Math.min(sessionEnd.getTime(), windowEnd.getTime()) - Math.max(sessionStart.getTime(), windowStart.getTime()));
+    if (!overlapMs) continue;
+
+    const overlapMinutes = Math.floor(overlapMs / 60000);
+    totalOverlapMinutes += overlapMinutes;
+    if (overlapMinutes > bestOverlapMinutes) {
+      bestOverlapMinutes = overlapMinutes;
+    }
   }
 
-  const qualifies = bestOverlap >= (shiftDuration * 0.9);
+  const qualifies = totalOverlapMinutes > 0;
 
   return {
     qualifies,
-    overlapMinutes: bestOverlap,
-    requiredMinutes: Math.ceil(shiftDuration * 0.9),
-    shiftDurationMinutes: shiftDuration,
+    overlapMinutes: bestOverlapMinutes,
+    totalOverlapMinutes,
+    shiftDurationMinutes,
   };
 }
 
@@ -2416,22 +2444,7 @@ client.on("interactionCreate", async interaction => {
     });
   
     // options (all optional)
-    const userInputRaw = interaction.options.getString("user")?.trim();
-    const mentionMatch = userInputRaw?.match(/^<@!?(\d{17,20})>$/);
-    const userIdInput = mentionMatch?.[1] || (userInputRaw?.match(/^\d{17,20}$/)?.[0] ?? null);
-    const wantsAllUsers = userInputRaw === "0";
-
-    let requestedUser = null;
-    if (userInputRaw && !wantsAllUsers) {
-      if (!userIdInput) {
-        return interaction.editReply("❌ Invalid `user` format. Use a user ID, @mention, or `0`.");
-      }
-      try {
-        requestedUser = await interaction.client.users.fetch(userIdInput);
-      } catch {
-        return interaction.editReply("❌ User not found for the provided ID/mention.");
-      }
-    }
+    const requestedUser = interaction.options.getUser("user");
 
     const targetUser = requestedUser || interaction.user;
     
@@ -2476,14 +2489,9 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only leaders and managers can use strict nightshift view.");
     }
 
-    if (wantsAllUsers && !hasNightshiftFilter) {
-      return interaction.editReply("❌ `user: 0` is only supported with nightshift filters.");
-    }
-
     if (hasNightshiftFilter) {
       const matchedUsers = [];
-      const nearMissUsers = [];
-      const strictAllUsersMode = wantsAllUsers || !requestedUser;
+      const strictAllUsersMode = !requestedUser;
       const recordsToScan = strictAllUsersMode
         ? Object.entries(timesheet)
         : [[requestedUser.id, timesheet[requestedUser.id]]];
@@ -2492,7 +2500,6 @@ client.on("interactionCreate", async interaction => {
         if (!record || !Array.isArray(record.logs) || !record.logs.length) continue;
 
         const matchedSessions = [];
-        const nearMissSessions = [];
 
         for (const l of record.logs) {
           const sessionStart = new Date(l.start);
@@ -2500,11 +2507,13 @@ client.on("interactionCreate", async interaction => {
 
           if (!sessionOverlapsRange(sessionStart, sessionEnd, start, end)) continue;
 
-          const overlapInfo = overlapsNightshiftStrict(
+          const overlapInfo = overlapsShiftWindow(
             sessionStart,
             sessionEnd,
             nightshiftStartMin,
-            nightshiftEndMin
+            nightshiftEndMin,
+            start,
+            end
           );
 
           if (!overlapInfo) continue;
@@ -2513,94 +2522,76 @@ client.on("interactionCreate", async interaction => {
             matchedSessions.push({
               log: l,
               overlapMinutes: overlapInfo.overlapMinutes,
-              requiredMinutes: overlapInfo.requiredMinutes,
-              shiftDurationMinutes: overlapInfo.shiftDurationMinutes,
-            });
-            continue;
-          }
-
-          const withinOneHour = overlapInfo.overlapMinutes >= (overlapInfo.requiredMinutes - 60);
-          if (withinOneHour) {
-            nearMissSessions.push({
-              log: l,
-              overlapMinutes: overlapInfo.overlapMinutes,
-              requiredMinutes: overlapInfo.requiredMinutes,
+              totalOverlapMinutes: overlapInfo.totalOverlapMinutes,
               shiftDurationMinutes: overlapInfo.shiftDurationMinutes,
             });
           }
         }
 
-        const member = await safeGetMember(interaction, userId);
         const displayName =
-          member?.displayName ||
+          interaction.guild.members.cache.get(userId)?.displayName ||
           record?.name ||
           record?.lastKnownNames?.[record.lastKnownNames.length - 1] ||
           `User ${userId}`;
 
         if (matchedSessions.length) {
           matchedUsers.push({ userId, displayName, matchedSessions });
-        } else if (nearMissSessions.length) {
-          nearMissUsers.push({ userId, displayName, nearMissSessions });
         }
       }
 
       if (!matchedUsers.length) {
-        const nearMissLines = nearMissUsers
-          .sort((a, b) => b.nearMissSessions.length - a.nearMissSessions.length)
-          .slice(0, 10)
-          .map((entry, idx) => {
-            const best = entry.nearMissSessions.sort((a, b) => b.overlapMinutes - a.overlapMinutes)[0];
-            return `**${idx + 1}.** ${entry.displayName} (\`${entry.userId}\`) — overlap ${minutesToDurationLabel(best.overlapMinutes)} / required ${minutesToDurationLabel(best.requiredMinutes)}`;
-          });
-
         return interaction.editReply(
-          `📭 No users matched strict nightshift criteria in ${startStr} → ${endStr} (${nightshiftStartStr} → ${nightshiftEndStr}).` +
-          (nearMissLines.length
-            ? `\n\n⚠️ Near misses (within 1 hour of the required overlap):\n${nearMissLines.join("\n")}`
-            : "")
+          `📭 No users worked during ${nightshiftStartStr} → ${nightshiftEndStr} in ${startStr} → ${endStr}.`
         );
       }
 
       matchedUsers.sort((a, b) => b.matchedSessions.length - a.matchedSessions.length);
 
       const summaryLines = matchedUsers.slice(0, 20).map((entry, idx) => {
-        const best = entry.matchedSessions.sort((a, b) => b.overlapMinutes - a.overlapMinutes)[0];
-        const reason =
-          `selected: overlap ${minutesToDurationLabel(best.overlapMinutes)} ` +
-          `(required ${minutesToDurationLabel(best.requiredMinutes)} of ${minutesToDurationLabel(best.shiftDurationMinutes)} window)`;
-        return `**${idx + 1}.** ${entry.displayName} (\`${entry.userId}\`) — ${entry.matchedSessions.length} match(es), ${reason}`;
+        const best = entry.matchedSessions.sort((a, b) => b.totalOverlapMinutes - a.totalOverlapMinutes)[0];
+        const sessionLabel = formatSessionCompactPH(best.log.start, best.log.end);
+        return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length} session(s), b.o. ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
       });
+      const summaryChunks = [];
+      let currentChunk = "";
+      const maxChunkLength = 900;
 
-      let nearMissFieldValue = "None";
-      if (matchedUsers.length < 3 && nearMissUsers.length) {
-        nearMissFieldValue = nearMissUsers
-          .sort((a, b) => b.nearMissSessions.length - a.nearMissSessions.length)
-          .slice(0, 5)
-          .map((entry, idx) => {
-            const best = entry.nearMissSessions.sort((a, b) => b.overlapMinutes - a.overlapMinutes)[0];
-            return `**${idx + 1}.** ${entry.displayName} — ${minutesToDurationLabel(best.overlapMinutes)} / ${minutesToDurationLabel(best.requiredMinutes)} required`;
-          })
-          .join("\n");
+      for (const line of summaryLines) {
+        const next = currentChunk ? `${currentChunk}\n${line}` : line;
+        if (next.length > maxChunkLength) {
+          if (currentChunk) summaryChunks.push(currentChunk);
+          currentChunk = line;
+        } else {
+          currentChunk = next;
+        }
       }
+      if (currentChunk) summaryChunks.push(currentChunk);
 
-      return interaction.editReply({
-        embeds: [{
-          title: "🌙 Strict Nightshift Timesheet View",
-          color: 0x5865f2,
-          description:
-            `Range: **${startStr} → ${endStr}**\n` +
-            `Nightshift: **${nightshiftStartStr} → ${nightshiftEndStr}**\n` +
-            `Scope: **${strictAllUsersMode ? "All users" : `User ${requestedUser.id}`}**\n` +
-            `Rule: session must overlap at least **90%** of the nightshift window.`,
-          fields: [
-            { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
-            { name: "📋 Why They Were Selected", value: summaryLines.join("\n"), inline: false },
-            { name: "🟡 Near Misses", value: nearMissFieldValue, inline: false },
-          ],
-          footer: { text: "Strict match based on overlap in PH time" },
-          timestamp: new Date().toISOString(),
-        }],
+      const buildShiftEmbed = (usersText, partIndex = 0, totalParts = 1) => ({
+        title: partIndex === 0 ? "🌙 Shift Window Timesheet View" : `🌙 Shift Window Timesheet View (Part ${partIndex + 1}/${totalParts})`,
+        color: 0x5865f2,
+        description:
+          `Range: **${startStr} → ${endStr}**\n` +
+          `Nightshift: **${nightshiftStartStr} → ${nightshiftEndStr}**\n` +
+          `Scope: **${strictAllUsersMode ? "All users" : requestedUser.tag}**\n` +
+          `Rule: include any session that overlaps the selected shift window.`,
+        fields: [
+          { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
+          { name: "📋 Matching Users", value: usersText || "None", inline: false },
+        ],
+        footer: { text: "Match based on overlap in PH time" },
+        timestamp: new Date().toISOString(),
       });
+
+      await interaction.editReply({ embeds: [buildShiftEmbed(summaryChunks[0] || "None", 0, summaryChunks.length || 1)] });
+
+      for (let i = 1; i < summaryChunks.length; i++) {
+        await interaction.followUp({
+          embeds: [buildShiftEmbed(summaryChunks[i], i, summaryChunks.length)],
+          ephemeral: true,
+        });
+      }
+      return;
     }
 
     const member = await safeGetMember(interaction, targetUser.id);
