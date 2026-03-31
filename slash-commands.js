@@ -103,12 +103,12 @@ export const slashCommands = [
       {
         type: 1,
         name: "view",
-        description: "View a user's timesheet",
+        description: "View a user's timesheet or fetch strict nightshift matches",
         options: [
           {
             name: "user",
-            type: 6,
-            description: "User to view",
+            type: 3,
+            description: "User ID / @mention, or 0 for all users in nightshift mode",
             required: false,
           },
           {
@@ -121,6 +121,18 @@ export const slashCommands = [
             name: "end",
             type: 3,
             description: "End date (MM/DD/YYYY)",
+            required: false,
+          },
+          {
+            name: "shift_start",
+            type: 3,
+            description: "Shift start (HH:MM, e.g. 00:00)",
+            required: false,
+          },
+          {
+            name: "shift_end",
+            type: 3,
+            description: "Shift end (HH:MM, e.g. 05:00)",
             required: false,
           },
         ],
