@@ -2533,13 +2533,13 @@ client.on("interactionCreate", async interaction => {
 
       const summaryLines = matchedUsers.slice(0, 20).map((entry, idx) => {
         const best = entry.matchedSessions.sort((a, b) => b.totalOverlapMinutes - a.totalOverlapMinutes)[0];
-        return `**${idx + 1}.** ${entry.displayName} (\`${entry.userId}\`) — ${entry.matchedSessions.length} session(s), best overlap ${minutesToDurationLabel(best.overlapMinutes)}`;
+        const sessionLabel = formatSessionPH(best.log.start, best.log.end);
+        return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length} session(s), best overlap ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
       });
       const summaryText = summaryLines.join("\n");
       const summaryFieldValue = summaryText.length > 1000
         ? `${summaryText.slice(0, 980)}\n…`
         : summaryText;
-      const overflowCount = Math.max(0, matchedUsers.length - 20);
 
       return interaction.editReply({
         embeds: [{
@@ -2553,7 +2553,6 @@ client.on("interactionCreate", async interaction => {
           fields: [
             { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
             { name: "📋 Matching Users", value: summaryFieldValue || "None", inline: false },
-            { name: "➕ More", value: overflowCount ? `${overflowCount} more users not shown` : "No additional users", inline: false },
           ],
           footer: { text: "Match based on overlap in PH time" },
           timestamp: new Date().toISOString(),
