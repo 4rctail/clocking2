@@ -107,8 +107,8 @@ export const slashCommands = [
         options: [
           {
             name: "user",
-            type: 6,
-            description: "User to view",
+            type: 3,
+            description: "User ID / @mention, or 0 for all users in nightshift mode",
             required: false,
           },
           {

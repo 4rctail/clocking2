@@ -2416,7 +2416,23 @@ client.on("interactionCreate", async interaction => {
     });
   
     // options (all optional)
-    const requestedUser = interaction.options.getUser("user");
+    const userInputRaw = interaction.options.getString("user")?.trim();
+    const mentionMatch = userInputRaw?.match(/^<@!?(\d{17,20})>$/);
+    const userIdInput = mentionMatch?.[1] || (userInputRaw?.match(/^\d{17,20}$/)?.[0] ?? null);
+    const wantsAllUsers = userInputRaw === "0";
+
+    let requestedUser = null;
+    if (userInputRaw && !wantsAllUsers) {
+      if (!userIdInput) {
+        return interaction.editReply("❌ Invalid `user` format. Use a user ID, @mention, or `0`.");
+      }
+      try {
+        requestedUser = await interaction.client.users.fetch(userIdInput);
+      } catch {
+        return interaction.editReply("❌ User not found for the provided ID/mention.");
+      }
+    }
+
     const targetUser = requestedUser || interaction.user;
     
     // permission check
@@ -2456,15 +2472,19 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only leaders and managers can use strict nightshift view.");
     }
 
-    if (hasNightshiftFilter && requestedUser) {
-      return interaction.editReply("❌ Nightshift view currently fetches all users in the date range. Remove `user`.");
+    if (wantsAllUsers && !hasNightshiftFilter) {
+      return interaction.editReply("❌ `user: 0` is only supported with nightshift filters.");
     }
 
     if (hasNightshiftFilter) {
       const matchedUsers = [];
       const nearMissUsers = [];
+      const strictAllUsersMode = wantsAllUsers || !requestedUser;
+      const recordsToScan = strictAllUsersMode
+        ? Object.entries(timesheet)
+        : [[requestedUser.id, timesheet[requestedUser.id]]];
 
-      for (const [userId, record] of Object.entries(timesheet)) {
+      for (const [userId, record] of recordsToScan) {
         if (!record || !Array.isArray(record.logs) || !record.logs.length) continue;
 
         const matchedSessions = [];
@@ -2566,6 +2586,7 @@ client.on("interactionCreate", async interaction => {
           description:
             `Range: **${startStr} → ${endStr}**\n` +
             `Nightshift: **${nightshiftStartStr} → ${nightshiftEndStr}**\n` +
+            `Scope: **${strictAllUsersMode ? "All users" : `User ${requestedUser.id}`}**\n` +
             `Rule: session must overlap at least **90%** of the nightshift window.`,
           fields: [
             { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
