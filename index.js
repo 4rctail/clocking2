@@ -737,6 +737,73 @@ function parseDatePH(str, end = false) {
   return phDate;
 }
 
+function parseHHMM(value) {
+  if (!value || typeof value !== "string") return null;
+  const match = value.trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return (Number(match[1]) * 60) + Number(match[2]);
+}
+
+function getPHClockMinutes(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: PH_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const hour = Number(parts.find((p) => p.type === "hour")?.value || 0);
+  const minute = Number(parts.find((p) => p.type === "minute")?.value || 0);
+  return (hour * 60) + minute;
+}
+
+function overlapsNightshiftStrict(sessionStart, sessionEnd, shiftStartMin, shiftEndMin) {
+  if (!(sessionStart instanceof Date) || !(sessionEnd instanceof Date)) return null;
+  if (sessionEnd <= sessionStart) return null;
+
+  const startMin = getPHClockMinutes(sessionStart);
+  let endMin = getPHClockMinutes(sessionEnd);
+  if (sessionEnd <= sessionStart || endMin <= startMin) endMin += 1440;
+
+  const shiftDuration = shiftEndMin > shiftStartMin
+    ? shiftEndMin - shiftStartMin
+    : (shiftEndMin + 1440) - shiftStartMin;
+
+  const shiftWindows = [
+    [shiftStartMin, shiftStartMin + shiftDuration],
+    [shiftStartMin + 1440, shiftStartMin + 1440 + shiftDuration],
+  ];
+
+  let bestOverlap = 0;
+  for (const [wStart, wEnd] of shiftWindows) {
+    const overlap = Math.max(0, Math.min(endMin, wEnd) - Math.max(startMin, wStart));
+    if (overlap > bestOverlap) bestOverlap = overlap;
+  }
+
+  const qualifies = bestOverlap >= (shiftDuration * 0.9);
+
+  return {
+    qualifies,
+    overlapMinutes: bestOverlap,
+    requiredMinutes: Math.ceil(shiftDuration * 0.9),
+    shiftDurationMinutes: shiftDuration,
+  };
+}
+
+function minutesToDurationLabel(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}h ${m}m`;
+}
+
+function sessionOverlapsRange(sessionStart, sessionEnd, rangeStart, rangeEnd) {
+  if (!(sessionStart instanceof Date) || !(sessionEnd instanceof Date)) return false;
+  if (sessionEnd <= sessionStart) return false;
+  if (rangeStart && sessionEnd < rangeStart) return false;
+  if (rangeEnd && sessionStart > rangeEnd) return false;
+  return true;
+}
+
 
 // Track live status updates per user
 const liveStatusTimers = new Map();
@@ -2349,7 +2416,23 @@ client.on("interactionCreate", async interaction => {
     });
   
     // options (all optional)
-    const requestedUser = interaction.options.getUser("user");
+    const userInputRaw = interaction.options.getString("user")?.trim();
+    const mentionMatch = userInputRaw?.match(/^<@!?(\d{17,20})>$/);
+    const userIdInput = mentionMatch?.[1] || (userInputRaw?.match(/^\d{17,20}$/)?.[0] ?? null);
+    const wantsAllUsers = userInputRaw === "0";
+
+    let requestedUser = null;
+    if (userInputRaw && !wantsAllUsers) {
+      if (!userIdInput) {
+        return interaction.editReply("❌ Invalid `user` format. Use a user ID, @mention, or `0`.");
+      }
+      try {
+        requestedUser = await interaction.client.users.fetch(userIdInput);
+      } catch {
+        return interaction.editReply("❌ User not found for the provided ID/mention.");
+      }
+    }
+
     const targetUser = requestedUser || interaction.user;
     
     // permission check
@@ -2363,10 +2446,158 @@ client.on("interactionCreate", async interaction => {
 
     const startStr = interaction.options.getString("start");
     const endStr   = interaction.options.getString("end");
+    const nightshiftStartStr = interaction.options.getString("nightshift_start");
+    const nightshiftEndStr = interaction.options.getString("nightshift_end");
   
     // parse dates
     const start = parseDatePH(startStr);
     const end   = parseDatePH(endStr, true);
+    const hasNightshiftFilter = Boolean(nightshiftStartStr || nightshiftEndStr);
+    const nightshiftStartMin = parseHHMM(nightshiftStartStr);
+    const nightshiftEndMin = parseHHMM(nightshiftEndStr);
+
+    if (hasNightshiftFilter) {
+      if (!nightshiftStartStr || !nightshiftEndStr) {
+        return interaction.editReply("❌ Please provide both `nightshift_start` and `nightshift_end` (HH:MM).");
+      }
+      if (nightshiftStartMin === null || nightshiftEndMin === null) {
+        return interaction.editReply("❌ Invalid nightshift time format. Use `HH:MM` (example: `00:00`, `05:00`).");
+      }
+      if (!start || !end) {
+        return interaction.editReply("❌ Nightshift view requires both `start` and `end` dates.");
+      }
+    }
+
+    if (hasNightshiftFilter && !hasLeaderRoleById(interaction.user.id)) {
+      return interaction.editReply("❌ Only leaders and managers can use strict nightshift view.");
+    }
+
+    if (wantsAllUsers && !hasNightshiftFilter) {
+      return interaction.editReply("❌ `user: 0` is only supported with nightshift filters.");
+    }
+
+    if (hasNightshiftFilter) {
+      const matchedUsers = [];
+      const nearMissUsers = [];
+      const strictAllUsersMode = wantsAllUsers || !requestedUser;
+      const recordsToScan = strictAllUsersMode
+        ? Object.entries(timesheet)
+        : [[requestedUser.id, timesheet[requestedUser.id]]];
+
+      for (const [userId, record] of recordsToScan) {
+        if (!record || !Array.isArray(record.logs) || !record.logs.length) continue;
+
+        const matchedSessions = [];
+        const nearMissSessions = [];
+
+        for (const l of record.logs) {
+          const sessionStart = new Date(l.start);
+          const sessionEnd = new Date(l.end);
+
+          if (!sessionOverlapsRange(sessionStart, sessionEnd, start, end)) continue;
+
+          const overlapInfo = overlapsNightshiftStrict(
+            sessionStart,
+            sessionEnd,
+            nightshiftStartMin,
+            nightshiftEndMin
+          );
+
+          if (!overlapInfo) continue;
+
+          if (overlapInfo.qualifies) {
+            matchedSessions.push({
+              log: l,
+              overlapMinutes: overlapInfo.overlapMinutes,
+              requiredMinutes: overlapInfo.requiredMinutes,
+              shiftDurationMinutes: overlapInfo.shiftDurationMinutes,
+            });
+            continue;
+          }
+
+          const withinOneHour = overlapInfo.overlapMinutes >= (overlapInfo.requiredMinutes - 60);
+          if (withinOneHour) {
+            nearMissSessions.push({
+              log: l,
+              overlapMinutes: overlapInfo.overlapMinutes,
+              requiredMinutes: overlapInfo.requiredMinutes,
+              shiftDurationMinutes: overlapInfo.shiftDurationMinutes,
+            });
+          }
+        }
+
+        const member = await safeGetMember(interaction, userId);
+        const displayName =
+          member?.displayName ||
+          record?.name ||
+          record?.lastKnownNames?.[record.lastKnownNames.length - 1] ||
+          `User ${userId}`;
+
+        if (matchedSessions.length) {
+          matchedUsers.push({ userId, displayName, matchedSessions });
+        } else if (nearMissSessions.length) {
+          nearMissUsers.push({ userId, displayName, nearMissSessions });
+        }
+      }
+
+      if (!matchedUsers.length) {
+        const nearMissLines = nearMissUsers
+          .sort((a, b) => b.nearMissSessions.length - a.nearMissSessions.length)
+          .slice(0, 10)
+          .map((entry, idx) => {
+            const best = entry.nearMissSessions.sort((a, b) => b.overlapMinutes - a.overlapMinutes)[0];
+            return `**${idx + 1}.** ${entry.displayName} (\`${entry.userId}\`) — overlap ${minutesToDurationLabel(best.overlapMinutes)} / required ${minutesToDurationLabel(best.requiredMinutes)}`;
+          });
+
+        return interaction.editReply(
+          `📭 No users matched strict nightshift criteria in ${startStr} → ${endStr} (${nightshiftStartStr} → ${nightshiftEndStr}).` +
+          (nearMissLines.length
+            ? `\n\n⚠️ Near misses (within 1 hour of the required overlap):\n${nearMissLines.join("\n")}`
+            : "")
+        );
+      }
+
+      matchedUsers.sort((a, b) => b.matchedSessions.length - a.matchedSessions.length);
+
+      const summaryLines = matchedUsers.slice(0, 20).map((entry, idx) => {
+        const best = entry.matchedSessions.sort((a, b) => b.overlapMinutes - a.overlapMinutes)[0];
+        const reason =
+          `selected: overlap ${minutesToDurationLabel(best.overlapMinutes)} ` +
+          `(required ${minutesToDurationLabel(best.requiredMinutes)} of ${minutesToDurationLabel(best.shiftDurationMinutes)} window)`;
+        return `**${idx + 1}.** ${entry.displayName} (\`${entry.userId}\`) — ${entry.matchedSessions.length} match(es), ${reason}`;
+      });
+
+      let nearMissFieldValue = "None";
+      if (matchedUsers.length < 3 && nearMissUsers.length) {
+        nearMissFieldValue = nearMissUsers
+          .sort((a, b) => b.nearMissSessions.length - a.nearMissSessions.length)
+          .slice(0, 5)
+          .map((entry, idx) => {
+            const best = entry.nearMissSessions.sort((a, b) => b.overlapMinutes - a.overlapMinutes)[0];
+            return `**${idx + 1}.** ${entry.displayName} — ${minutesToDurationLabel(best.overlapMinutes)} / ${minutesToDurationLabel(best.requiredMinutes)} required`;
+          })
+          .join("\n");
+      }
+
+      return interaction.editReply({
+        embeds: [{
+          title: "🌙 Strict Nightshift Timesheet View",
+          color: 0x5865f2,
+          description:
+            `Range: **${startStr} → ${endStr}**\n` +
+            `Nightshift: **${nightshiftStartStr} → ${nightshiftEndStr}**\n` +
+            `Scope: **${strictAllUsersMode ? "All users" : `User ${requestedUser.id}`}**\n` +
+            `Rule: session must overlap at least **90%** of the nightshift window.`,
+          fields: [
+            { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
+            { name: "📋 Why They Were Selected", value: summaryLines.join("\n"), inline: false },
+            { name: "🟡 Near Misses", value: nearMissFieldValue, inline: false },
+          ],
+          footer: { text: "Strict match based on overlap in PH time" },
+          timestamp: new Date().toISOString(),
+        }],
+      });
+    }
 
     const member = await safeGetMember(interaction, targetUser.id);
   
@@ -2388,7 +2619,8 @@ client.on("interactionCreate", async interaction => {
     const filteredLogs = [];
     for (const l of record.logs) {
       const sessionStart = new Date(l.start);
-      if ((start && sessionStart < start) || (end && sessionStart > end)) continue;
+      const sessionEnd = new Date(l.end);
+      if (!sessionOverlapsRange(sessionStart, sessionEnd, start, end)) continue;
       filteredLogs.push(l);
     }
 
