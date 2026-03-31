@@ -713,6 +713,41 @@ function formatSessionPH(startISO, endISO) {
   return `${datePart}, ${timePart}`;
 }
 
+function formatSessionCompactPH(startISO, endISO) {
+  const s = new Date(startISO);
+  const e = new Date(endISO);
+
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PH_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const timeParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PH_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const sDate = dateParts.format(s);
+  const eDate = dateParts.format(e);
+  const sTime = timeParts.format(s);
+  const eTime = timeParts.format(e);
+
+  if (sDate === eDate) {
+    return `${sDate}, ${sTime}-${eTime}`;
+  }
+
+  const [sMonth, sDay, sYear] = sDate.split("/");
+  const [eMonth, eDay, eYear] = eDate.split("/");
+  if (sYear === eYear && sMonth === eMonth) {
+    return `${sMonth}/${sDay}-${eDay}/${sYear}, ${sTime}-${eTime}`;
+  }
+
+  return `${sDate}-${eDate}, ${sTime}-${eTime}`;
+}
+
 
 function parseDatePH(str, end = false) {
   if (!str) return null;
@@ -2533,7 +2568,7 @@ client.on("interactionCreate", async interaction => {
 
       const summaryLines = matchedUsers.slice(0, 20).map((entry, idx) => {
         const best = entry.matchedSessions.sort((a, b) => b.totalOverlapMinutes - a.totalOverlapMinutes)[0];
-        const sessionLabel = formatSessionPH(best.log.start, best.log.end);
+        const sessionLabel = formatSessionCompactPH(best.log.start, best.log.end);
         return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length} session(s), best overlap ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
       });
       const summaryText = summaryLines.join("\n");
