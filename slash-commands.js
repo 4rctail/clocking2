@@ -103,7 +103,7 @@ export const slashCommands = [
       {
         type: 1,
         name: "view",
-        description: "View a user's timesheet or fetch strict nightshift matches",
+        description: "View a user's timesheet or fetch strict shift matches",
         options: [
           {
             name: "user",
