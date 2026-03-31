@@ -2569,7 +2569,7 @@ client.on("interactionCreate", async interaction => {
       const summaryLines = matchedUsers.slice(0, 20).map((entry, idx) => {
         const best = entry.matchedSessions.sort((a, b) => b.totalOverlapMinutes - a.totalOverlapMinutes)[0];
         const sessionLabel = formatSessionCompactPH(best.log.start, best.log.end);
-        return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length} session(s), best overlap ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
+        return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length}ss, b.o. ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
       });
       const summaryText = summaryLines.join("\n");
       const summaryFieldValue = summaryText.length > 1000
