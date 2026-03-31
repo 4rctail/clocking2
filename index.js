@@ -2444,22 +2444,7 @@ client.on("interactionCreate", async interaction => {
     });
   
     // options (all optional)
-    const userInputRaw = interaction.options.getString("user")?.trim();
-    const mentionMatch = userInputRaw?.match(/^<@!?(\d{17,20})>$/);
-    const userIdInput = mentionMatch?.[1] || (userInputRaw?.match(/^\d{17,20}$/)?.[0] ?? null);
-    const wantsAllUsers = userInputRaw === "0";
-
-    let requestedUser = null;
-    if (userInputRaw && !wantsAllUsers) {
-      if (!userIdInput) {
-        return interaction.editReply("❌ Invalid `user` format. Use a user ID, @mention, or `0`.");
-      }
-      try {
-        requestedUser = await interaction.client.users.fetch(userIdInput);
-      } catch {
-        return interaction.editReply("❌ User not found for the provided ID/mention.");
-      }
-    }
+    const requestedUser = interaction.options.getUser("user");
 
     const targetUser = requestedUser || interaction.user;
     
@@ -2504,13 +2489,9 @@ client.on("interactionCreate", async interaction => {
       return interaction.editReply("❌ Only leaders and managers can use strict nightshift view.");
     }
 
-    if (wantsAllUsers && !hasNightshiftFilter) {
-      return interaction.editReply("❌ `user: 0` is only supported with nightshift filters.");
-    }
-
     if (hasNightshiftFilter) {
       const matchedUsers = [];
-      const strictAllUsersMode = wantsAllUsers || !requestedUser;
+      const strictAllUsersMode = !requestedUser;
       const recordsToScan = strictAllUsersMode
         ? Object.entries(timesheet)
         : [[requestedUser.id, timesheet[requestedUser.id]]];
@@ -2569,30 +2550,48 @@ client.on("interactionCreate", async interaction => {
       const summaryLines = matchedUsers.slice(0, 20).map((entry, idx) => {
         const best = entry.matchedSessions.sort((a, b) => b.totalOverlapMinutes - a.totalOverlapMinutes)[0];
         const sessionLabel = formatSessionCompactPH(best.log.start, best.log.end);
-        return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length}ss, b.o. ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
+        return `**${idx + 1}.** ${entry.displayName} — ${entry.matchedSessions.length} session(s), b.o. ${minutesToDurationLabel(best.overlapMinutes)} (${sessionLabel})`;
       });
-      const summaryText = summaryLines.join("\n");
-      const summaryFieldValue = summaryText.length > 1000
-        ? `${summaryText.slice(0, 980)}\n…`
-        : summaryText;
+      const summaryChunks = [];
+      let currentChunk = "";
+      const maxChunkLength = 900;
 
-      return interaction.editReply({
-        embeds: [{
-          title: "🌙 Shift Window Timesheet View",
-          color: 0x5865f2,
-          description:
-            `Range: **${startStr} → ${endStr}**\n` +
-            `Nightshift: **${nightshiftStartStr} → ${nightshiftEndStr}**\n` +
-            `Scope: **${strictAllUsersMode ? "All users" : `User ${requestedUser.id}`}**\n` +
-            `Rule: include any session that overlaps the selected shift window.`,
-          fields: [
-            { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
-            { name: "📋 Matching Users", value: summaryFieldValue || "None", inline: false },
-          ],
-          footer: { text: "Match based on overlap in PH time" },
-          timestamp: new Date().toISOString(),
-        }],
+      for (const line of summaryLines) {
+        const next = currentChunk ? `${currentChunk}\n${line}` : line;
+        if (next.length > maxChunkLength) {
+          if (currentChunk) summaryChunks.push(currentChunk);
+          currentChunk = line;
+        } else {
+          currentChunk = next;
+        }
+      }
+      if (currentChunk) summaryChunks.push(currentChunk);
+
+      const buildShiftEmbed = (usersText, partIndex = 0, totalParts = 1) => ({
+        title: partIndex === 0 ? "🌙 Shift Window Timesheet View" : `🌙 Shift Window Timesheet View (Part ${partIndex + 1}/${totalParts})`,
+        color: 0x5865f2,
+        description:
+          `Range: **${startStr} → ${endStr}**\n` +
+          `Nightshift: **${nightshiftStartStr} → ${nightshiftEndStr}**\n` +
+          `Scope: **${strictAllUsersMode ? "All users" : requestedUser.tag}**\n` +
+          `Rule: include any session that overlaps the selected shift window.`,
+        fields: [
+          { name: "✅ Matched Users", value: String(matchedUsers.length), inline: true },
+          { name: "📋 Matching Users", value: usersText || "None", inline: false },
+        ],
+        footer: { text: "Match based on overlap in PH time" },
+        timestamp: new Date().toISOString(),
       });
+
+      await interaction.editReply({ embeds: [buildShiftEmbed(summaryChunks[0] || "None", 0, summaryChunks.length || 1)] });
+
+      for (let i = 1; i < summaryChunks.length; i++) {
+        await interaction.followUp({
+          embeds: [buildShiftEmbed(summaryChunks[i], i, summaryChunks.length)],
+          ephemeral: true,
+        });
+      }
+      return;
     }
 
     const member = await safeGetMember(interaction, targetUser.id);
