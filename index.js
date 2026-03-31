@@ -2446,8 +2446,12 @@ client.on("interactionCreate", async interaction => {
 
     const startStr = interaction.options.getString("start");
     const endStr   = interaction.options.getString("end");
-    const nightshiftStartStr = interaction.options.getString("nightshift_start");
-    const nightshiftEndStr = interaction.options.getString("nightshift_end");
+    const nightshiftStartStr =
+      interaction.options.getString("shift_start") ||
+      interaction.options.getString("nightshift_start");
+    const nightshiftEndStr =
+      interaction.options.getString("shift_end") ||
+      interaction.options.getString("nightshift_end");
   
     // parse dates
     const start = parseDatePH(startStr);
@@ -2458,7 +2462,7 @@ client.on("interactionCreate", async interaction => {
 
     if (hasNightshiftFilter) {
       if (!nightshiftStartStr || !nightshiftEndStr) {
-        return interaction.editReply("❌ Please provide both `nightshift_start` and `nightshift_end` (HH:MM).");
+        return interaction.editReply("❌ Please provide both `shift_start` and `shift_end` (HH:MM).");
       }
       if (nightshiftStartMin === null || nightshiftEndMin === null) {
         return interaction.editReply("❌ Invalid nightshift time format. Use `HH:MM` (example: `00:00`, `05:00`).");
